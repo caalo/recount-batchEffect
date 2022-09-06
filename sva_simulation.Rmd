@@ -1,14 +1,42 @@
+---
+title: "SVA Simulation"
+author: "Christopher Lo"
+date: "9/6/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=F, message=F, warning=F}
 library(sva)
 library(tidyverse)
 library(invgamma)
+```
 
+# Simulation Set-Up
 
-#Simulation studies recreated to my best abilities from 
-#"A general framework for multiple testing dependence" (Leek et al. 2008)
+Simulation studies recreated to my best abilities from 
+"A general framework for multiple testing dependence" (Leek et al. 2008)
 
-#generate data X:
-#X = BS + Gamma*G + U.
+We generate $X$ from the following model: $X = BS + \Gamma G + U$. 
 
+We have 1000 genes, 20 samples, and 2 latent variables. The design matrix $S$ is a case control set-up of 10 cases and 10 controls. 
+
+$$\sigma_i^2 \sim InvGamma(10, 9)$$
+
+$$U_{ij} \sim N(0, \sigma_i^2)$$
+$$b_{m,1} \sim N(0, 1), m=1,...,1000$$
+$$b_{m, 2} \sim N(0, 3.1), m=1,...,300$$
+$$b_{m, 2} \sim N(2.5, 1), m=301,...,1000$$
+
+$$\Gamma_{m, 1} \sim N(0, 2.5), m=301,...,700$$
+$$\Gamma_{m, 2} \sim N(0, 2.5), m=501,...,900$$
+
+$$G_{1:10} \sim Bernoulli(.7)$$
+$$G_{11:20} \sim Bernoulli(.2)$$
+```{r echo=F}
 m = 1000
 n = 20
 r = 2
@@ -33,17 +61,28 @@ G = mapply(p = c(rep(.7, 10), rep(.2, 10)), #no need for intercept for kernel G.
 
 
 X = B %*% S + Gamma %*% G + U
+```
+
+# Run SVA and regression to estimate parameters and SVs
+
+We look at the number of SVs estimated, whether the latent variables are spanned by the estimated SVs, the recovered regression coefficients, the null p-value distribution, and the ranks of top genes. 
+
+Todo: ranks of top genes code unsure right now. 
 
 
-#run SVA on our simulation. 
-pdf("sva_simulation.pdf", width=6, height=4)
+```{r echo=T, warning=F, message=F}
 nullMod = t(S)[, 1]
 n.sv = num.sv(X, t(S), method = "be")
+cat("Method be: Number of SVs: ", n.sv, "\n")
+
+leek.n.sv = num.sv(X, t(S), method = "leek")
+cat("Method leek: Number of SVs: ", leek.n.sv, "\n")
+
 svobj = sva(X, t(S), nullMod, n.sv = n.sv)
 
 #visually look at predicted SVs. 
-qplot(as.numeric(G[1 ,]), svobj$sv[, 1], xlab = "True SV1", ylab = "Est. SV1")
-qplot(as.numeric(G[2 ,]), svobj$sv[, 2], xlab = "True SV2", ylab = "Est. SV2")
+qplot(as.numeric(G[1 ,]), svobj$sv[, 1], xlab = "True latent variable 1", ylab = "Est. SV1")
+qplot(as.numeric(G[2 ,]), svobj$sv[, 2], xlab = "True latent variable 2", ylab = "Est. SV2")
 
 nullmodsv = cbind(nullMod, svobj$sv)
 modsv = cbind(t(S), svobj$sv)
@@ -91,4 +130,5 @@ fstat_rank = rank(-fstat)
 true_rank = rank(-abs(b2))
 
 qplot(true_rank, fstat_rank)
-dev.off()
+```
+

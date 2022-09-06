@@ -1,0 +1,243 @@
+---
+title: "Reproduce SVA problem"
+author: "Christopher Lo"
+date: "9/5/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=F, warning=F, message=F}
+library(tidyverse)
+library(recount3)
+library(sva)
+library(limma)
+
+#from https://jhubiostatistics.shinyapps.io/recount3-study-explorer/
+
+human_projects <- available_projects()
+
+n_sv_agg = numeric(4)
+n_sv = numeric(4)
+```
+
+## Setup
+
+*What happens to the number of Surrogate Variables as we increase the number of studies in recount3?*
+
+To illustrate this, we examined 4 studies that involved case/control prostate tumor and normal samples,
+with a minimal of 25 samples per study. For each study, we examined the number of SVs (using method = "be"), 
+and we also aggregrated them one by one and examined the number of SVs iteratively. When using method = "leek",
+we always get 0 estimated SVs, which is strange.
+
+1.    SRP118614: "Overall design: Matched high-grade (GS=7(4+3)) prostate tumor and adjacent
+normal specimens from 16 patients (8 AAM and 8 EAM) were subjected to two 
+replicate runs of RNA-sequencing."
+
+2.    SRP212704: "Overall design: Strand specific total RNA seq was performed using frozen 
+patient matched prostate cancer tissue in biological duplicates.
+Purpose: The goal of present study is to compare transcript level changes
+between normal and tumor of same individuals"   
+
+3.    SRP002628: "Overall design: We sequenced the transcriptome (polyA+) of 20 prostate cancer 
+tumors and 10 matched normal tissues using Illumina GAII platform. 
+Then we used bioinformatic approaches to identify prostate cancer specific 
+aberrations which include gene fusion, alternative splicing, somatic mutation."
+
+4.    SRP027258: "We utilized RNA sequencing to test the hypothesis that SFN modifies the 
+expression of genes that are critical in prostate cancer progression. 
+Normal prostate epithelial cells, and androgen-dependent and androgen-independent 
+prostate cancer cells were treated with 15 µM SFN and the transcriptome was 
+determined at 6 and 24 hour time points."
+
+
+
+```{r echo=T, warning=F, message=F}
+#1. 
+#Overall design: Matched high-grade (GS=7(4+3)) prostate tumor and adjacent
+#normal specimens from 16 patients (8 AAM and 8 EAM) were subjected to two 
+#replicate runs of RNA-sequencing.
+
+proj_info <- subset(
+  human_projects,
+  project == "SRP118614"
+)
+
+rse_gene_SRP118614 <- create_rse(proj_info)
+phenotype = data.frame(colData(rse_gene_SRP118614))
+genotype = data.frame(rowData(rse_gene_SRP118614))
+
+phenotype$phenotype_tumor = grepl("prostate tumor", phenotype$sra.sample_attributes)
+mod_SRP118614 = model.matrix(~phenotype_tumor, data = phenotype)
+
+geneCounts_SRP118614 = assays(rse_gene_SRP118614)$raw_counts
+geneCounts_SRP118614 = geneCounts_SRP118614 / colSums(geneCounts_SRP118614) #normalize by bases sequenced in genes
+
+n_sv[1] = num.sv(geneCounts_SRP118614, mod_SRP118614, method = "be", vfilter = 10000)
+n_sv_agg[1] = NA
+
+#2.
+#Overall design: Strand specific total RNA seq was performed using frozen 
+#patient matched prostate cancer tissue in biological duplicates.
+#Purpose: The goal of present study is to compare transcript level changes
+#between normal and tumor of same individuals
+
+proj_info <- subset(
+  human_projects,
+  project == "SRP212704"
+)
+
+rse_gene_SRP212704 <- create_rse(proj_info)
+phenotype = data.frame(colData(rse_gene_SRP212704))
+genotype = data.frame(rowData(rse_gene_SRP212704))
+
+phenotype$phenotype_tumor = grepl("Tumor", phenotype$sra.sample_attributes)
+mod_SRP212704 = model.matrix(~phenotype_tumor, data = phenotype)
+
+geneCounts_SRP212704 = assays(rse_gene_SRP212704)$raw_counts
+geneCounts_SRP212704 = geneCounts_SRP212704 / colSums(geneCounts_SRP212704)
+
+geneCounts_2 = cbind(geneCounts_SRP118614, geneCounts_SRP212704)
+mod_2 = rbind(mod_SRP118614, mod_SRP212704)
+
+n_sv[2] = num.sv(geneCounts_SRP212704, mod_SRP212704, method = "be", vfilter = 10000)
+n_sv_agg[2] = num.sv(geneCounts_2, mod_2, method = "be", vfilter = 10000)
+
+
+#3
+#Overall design: We sequenced the transcriptome (polyA+) of 20 prostate cancer 
+#tumors and 10 matched normal tissues using Illumina GAII platform. 
+#Then we used bioinformatic approaches to identify prostate cancer specific 
+#aberrations which include gene fusion, alternative splicing, somatic mutation
+proj_info <- subset(
+  human_projects,
+  project == "SRP002628"
+)
+rse_gene_SRP002628 <- create_rse(proj_info)
+phenotype = data.frame(colData(rse_gene_SRP002628))
+genotype = data.frame(rowData(rse_gene_SRP002628))
+
+phenotype$phenotype_tumor = grepl("Prostate cancer tissue", phenotype$sra.sample_attributes)
+mod_SRP002628 = model.matrix(~phenotype_tumor, data = phenotype)
+
+geneCounts_SRP002628 = assays(rse_gene_SRP002628)$raw_counts
+geneCounts_SRP002628 = geneCounts_SRP002628 / colSums(geneCounts_SRP002628)
+
+geneCounts_3 = cbind(geneCounts_SRP118614, geneCounts_SRP212704, geneCounts_SRP002628)
+mod_3 = rbind(mod_SRP118614, mod_SRP212704, mod_SRP002628)
+
+n_sv[3] = num.sv(geneCounts_SRP002628, mod_SRP002628, method = "be", vfilter = 10000)
+n_sv_agg[3] = num.sv(geneCounts_3, mod_3, method = "be", vfilter = 10000)
+
+#try plotting the SV variables
+svobj = sva(geneCounts_3, mod_3, mod_3[, 1], n.sv = n_sv_agg[3], vfilter = 10000)
+annotate = c(rep("study1", ncol(geneCounts_SRP118614)), 
+             rep("study2", ncol(geneCounts_SRP212704)), 
+             rep("study3", ncol(geneCounts_SRP002628)))
+qplot(svobj$sv[,1], svobj$sv[,2], color = annotate, xlab = "SV1", ylab = "SV2")
+
+#4
+#We utilized RNA sequencing to test the hypothesis that SFN modifies the 
+#expression of genes that are critical in prostate cancer progression. 
+#Normal prostate epithelial cells, and androgen-dependent and androgen-independent 
+#prostate cancer cells were treated with 15 µM SFN and the transcriptome was 
+#determined at 6 and 24 hour time points. 
+proj_info <- subset(
+  human_projects,
+  project == "SRP027258"
+)
+rse_gene_SRP027258 <- create_rse(proj_info)
+phenotype = data.frame(colData(rse_gene_SRP027258))
+genotype = data.frame(rowData(rse_gene_SRP027258))
+
+phenotype$phenotype_tumor = grepl("prostate cancer", phenotype$sra.sample_attributes)
+mod_SRP027258 = model.matrix(~phenotype_tumor, data = phenotype)
+
+
+geneCounts_SRP027258 = assays(rse_gene_SRP027258)$raw_counts
+geneCounts_SRP027258 = geneCounts_SRP027258 / colSums(geneCounts_SRP027258)
+
+geneCounts_4 = cbind(geneCounts_SRP118614, geneCounts_SRP212704, geneCounts_SRP002628, geneCounts_SRP027258)
+mod_4 = rbind(mod_SRP118614, mod_SRP212704, mod_SRP002628, mod_SRP027258)
+
+
+n_sv[4] = num.sv(geneCounts_SRP027258, mod_SRP027258, method = "be", vfilter = 10000)
+n_sv_agg[4] = num.sv(geneCounts_4, mod_4, method = "be", vfilter = 10000)
+
+#try plotting the SV variables
+svobj = sva(geneCounts_4, mod_4, mod_4[, 1], n.sv = n_sv_agg[4], vfilter = 10000)
+annotate = c(rep("study1", ncol(geneCounts_SRP118614)), 
+             rep("study2", ncol(geneCounts_SRP212704)), 
+             rep("study3", ncol(geneCounts_SRP002628)),
+             rep("study4", ncol(geneCounts_SRP027258)))
+qplot(svobj$sv[,1], svobj$sv[,2], color = annotate, xlab = "SV1", ylab = "SV2")
+
+```
+
+
+## Results
+
+The number of SVs for each study: `r n_sv`. 
+
+The number of SVs for each aggregration (study 1+2, 1+2+3, 1+2+3+4): `r n_sv_agg`. 
+
+## Follow-up
+
+We then consider the following:  Is there a difference between study 1 and study 2 just using control samples with SVs? 
+When we run DE, we would expect theadj. p-values look uniform.
+
+
+```{r echo=T, warning=F, message=F}
+#We then consider the following:  
+#Is there a difference between study 1 and study 2 just using control samples with SVs? 
+#Run DE: Do adj. p-values look uniform?
+mod_2controls = c(rep(0, ncol(geneCounts_SRP118614)), 
+                  rep(1, ncol(geneCounts_SRP212704)))
+controls = which(mod_2[, 2] == 0)
+geneCounts_2controls = geneCounts_2[, controls]
+mod_2controls = mod_2controls[controls]
+mod_2controls = model.matrix(~ mod_2controls)
+
+n.sv = num.sv(geneCounts_2controls, mod_2controls, method = "be", vfilter = 10000)
+svobj = sva(geneCounts_2controls, mod_2controls, mod_2controls[, 1], n.sv = n.sv, vfilter = 10000)
+mod_2controls_sv = cbind(mod_2controls, svobj$sv)
+#run limma for DE
+fit = lmFit(geneCounts_2controls, mod_2controls_sv)
+eb = eBayes(fit)
+result = topTable(eb, adjust = "BH", number = nrow(geneCounts_2controls))
+
+plot(1:nrow(result)/(nrow(result)+1), sort(result$adj.P.Val), xlab="Adj. p-values", ylab="Unif(0, 1)")
+abline(a = 0, b = 1)
+title(main="QQ plot of adj. p-values vs. Unif(0, 1)")
+
+```
+
+
+That looks weird. A even more simple case is to take control samples from study 1,
+split it into two random groups (sample sizes of 12 and 12), run SVA, and perform DE. 
+
+```{r echo=T, warning=F, message=F}
+geneCounts_SRP118614_controls = geneCounts_SRP118614[, phenotype$phenotype_tumor == F]
+case_control = rep(0, ncol(geneCounts_SRP118614_controls))
+case_control[sample(1:ncol(geneCounts_SRP118614_controls), size = ncol(geneCounts_SRP118614_controls)/2)] = 1
+mod = model.matrix(~ case_control)
+
+
+n.sv = num.sv(geneCounts_SRP118614_controls, mod, method = "be", vfilter = 10000)
+svobj = sva(geneCounts_SRP118614_controls, mod, mod[, 1], n.sv = n.sv, vfilter = 10000)
+mod_sv = cbind(mod, svobj$sv)
+
+#run limma for DE
+fit = lmFit(geneCounts_SRP118614_controls, mod_sv)
+eb = eBayes(fit)
+result = topTable(eb, adjust = "BH", number = nrow(geneCounts_SRP118614_controls))
+
+plot(1:nrow(result)/(nrow(result)+1), sort(result$adj.P.Val), xlab="Adj. p-values", ylab="Unif(0, 1)")
+abline(a = 0, b = 1)
+title(main="QQ plot of adj. p-values vs. Unif(0, 1)")
+
+```
+
+Looks...better?
