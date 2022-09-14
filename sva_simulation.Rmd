@@ -17,50 +17,61 @@ library(invgamma)
 
 # Simulation Set-Up
 
-Simulation studies recreated to my best abilities from 
-"A general framework for multiple testing dependence" (Leek et al. 2008)
+Simulation studies inspired from
+*"A general framework for multiple testing dependence"* (Leek et al. 2008)
 
-We generate $X$ from the following model: $X = BS + \Gamma G + U$. 
+We generate $X$ from the following model: $$X = BS + \Gamma G + U$$ 
 
-We have 1000 genes, 20 samples, and 2 latent variables. The design matrix $S$ is a case control set-up of 10 cases and 10 controls. 
+We have $m = 1000$ genes (tests), $n = 20$ samples, and $r = 2$ latent variables.
 
-$$\sigma_i^2 \sim InvGamma(10, 9)$$
+Sampling noise: $U_{m,n} \sim N(0, 1)$.
 
-$$U_{ij} \sim N(0, \sigma_i^2)$$
-$$b_{m,1} \sim N(0, 1), m=1,...,1000$$
-$$b_{m, 2} \sim N(0, 3.1), m=1,...,300$$
-$$b_{m, 2} \sim N(2.5, 1), m=301,...,1000$$
+The design matrix $S$ is 10 cases and 10 controls: $S_{1, n} = 1$ for $n=1:20$. Then, $S_{2, n} = 0$ for $n = 1:10$, $S_{2, n} = 1$ for $n = 11:20$.
 
-$$\Gamma_{m, 1} \sim N(0, 2.5), m=301,...,700$$
-$$\Gamma_{m, 2} \sim N(0, 2.5), m=501,...,900$$
+Control effect for all genes: $b_{m,1} \sim N(0, 1), m=1:1000$
 
-$$G_{1:10} \sim Bernoulli(.7)$$
-$$G_{11:20} \sim Bernoulli(.2)$$
+Case effect for DE genes $m=1:300$: $b_{m, 2} \sim N(3, 1)$
+
+Case effect for Non-DE genes $m=301:1000$: $b_{m, 2} \sim N(0, 2)$
+
+Latent design matrix (kernel) $G$: $G_{r, n} \sim Bernoulli(.2), n=1:10$. $G_{r, n} \sim Bernoulli(.7), n=11:20$, where $r = 1, 2$. (This ensures correlation between the two design matrices.)
+
+Latent effect 1: $\Gamma_{m, 1} \sim N(0, 1), m=1:300$,  $\Gamma_{m, 1} \sim N(1, 2.5), m=301:1000$. (Overlaps with Non-DE genes, will lead to FPs if not corrected)
+
+Latent effect 2: $\Gamma_{m, 2} \sim N(-1, 2.5), m=1:300$, $\Gamma_{m, 2} \sim N(0, 1), m=301:1000$. (Overlaps with Non-DE  genes, will lead to FNs if not corrected)
+
+
 ```{r echo=F}
-m = 1000
-n = 20
+set.seed(2023)
+m = 1000 #number of genes (tests)
+n = 20 #number of samples
 r = 2
 
-sigma_i = rinvgamma(m, 10, 9)
-U = t(sapply(sigma_i, function(x) rnorm(20, mean = 0, sd = x)))
+#sigma_i = rinvgamma(m, 10, 9)
+#U = t(sapply(sigma_i, function(x) rnorm(n, mean = 0, sd = x)))
+U = rnorm(n, mean = 0, sd = 1)
 
-b1 = rnorm(m, mean = 0, sd = 1)
-b2 = mapply(mu = c(rep(0, 300), rep(3.1, m - 300)),
-             sigma = c(rep(2.5, 300), rep(1, m - 300)),
+b1 = rnorm(m, mean = 0, sd = 1) #intercept
+b2 = mapply(mu = c(rep(3, 300), rep(0, m - 300)),
+             sigma = c(rep(1, 300), rep(2, m - 300)),
              function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
 B = cbind(b1, b2)
 S = matrix(c(rep(1, n), rep(0, 10), rep(1, 10)), byrow = T, ncol = n)
 
-Gamma = t(mapply(mu = c(rep(0, m)),
-                 sigma = c(rep(2.5, m)),
-                 function(mu, sigma) rnorm(r, mean = mu, sd = sigma)))
-Gamma[c(1:200, 701:m), 1] = 0 #only signal from genes 300-700 in SV1
-Gamma[c(1:400, 901:m), 2] = 0 #only signal from genes 500-900 in SV2
-G = mapply(p = c(rep(.7, 10), rep(.2, 10)), #no need for intercept for kernel G. 
+gamma1 = mapply(mu = c(rep(0, 300), rep(1, m - 300)),
+             sigma = c(rep(1, 300), rep(2.5, m - 300)),
+             function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+gamma1 = mapply(mu = c(rep(-1, 300), rep(0, m - 300)),
+             sigma = c(rep(2.5, 300), rep(1, m - 300)),
+             function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+Gamma = cbind(gamma1, gamma2)
+G = mapply(p = c(rep(.2, 10), rep(.7, 10)), #no need for intercept for kernel G. 
            function(p) rbernoulli(2, p))
 
 
 X = B %*% S + Gamma %*% G + U
+
+
 ```
 
 # Run SVA and regression to estimate parameters and SVs
@@ -71,13 +82,22 @@ Todo: ranks of top genes code unsure right now.
 
 
 ```{r echo=T, warning=F, message=F}
-nullMod = t(S)[, 1]
 n.sv = num.sv(X, t(S), method = "be")
 cat("Method be: Number of SVs: ", n.sv, "\n")
 
-leek.n.sv = num.sv(X, t(S), method = "leek")
-cat("Method leek: Number of SVs: ", leek.n.sv, "\n")
+cat("Correlation of primary vs. latent variable 1: ", cor(G[1 ,], S[2 ,]), "\n")
+cat("Correlation of primary vs. latent variable 1: ", cor(G[2 ,], S[2 ,]), "\n")
 
+pca = prcomp(X)
+variance = pca$sdev^2 / sum(pca$sdev^2)
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(X), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("Number of SVs: ", n.sv)) + ylim(0, 1)
+```
+
+```{r echo=T, warning=F, message=F, fig.width=8, fig.height=5}
+
+nullMod = t(S)[, 1]
 svobj = sva(X, t(S), nullMod, n.sv = n.sv)
 
 #visually look at predicted SVs. 
@@ -90,16 +110,27 @@ modsv = cbind(t(S), svobj$sv)
 fitsv = lm.fit(modsv, t(X))
 
 #visually look at predicted coefficients
-effect = c(rep("null", 300), rep("alt", m - 300))
-qplot(B[, 1], fitsv$coefficients[1 ,], color = effect, main = round(cor(fitsv$coefficients[1 ,], B[, 1]), 2), alpha = .4, xlab = "True b_i1", ylab = "Est. b_i1")
-qplot(B[, 2], fitsv$coefficients[2 ,], color = effect, main = round(cor(B[, 2], fitsv$coefficients[2 ,]), 2), alpha = .25, xlab = "True b_i2", ylab = "Est. b_i2")
+plot_df = data.frame(b1 = B[, 1], 
+                     b2 = B[, 2], 
+                     b1_hat = fitsv$coefficients[1 ,],
+                     b2_hat = fitsv$coefficients[2 ,],
+                     b2_labels = c(rep("alt", 300), rep("null", m - 300)),
+                     gamma1 = Gamma[, 1],
+                     gamma1_hat = fitsv$coefficients[3 ,],
+                     gamma1_labels = c(rep("alt", 300), rep("null", m - 300)),
+                     gamma2 = Gamma[, 2],
+                     gamma2_hat = fitsv$coefficients[4 ,],
+                     gamma2_labels = c(rep("alt", 300), rep("null", m - 300)))
 
-effect = c(rep("null", 200), rep("alt", 500), rep("null", 300))
-qplot(Gamma[, 1], fitsv$coefficients[3 ,], color = effect, main = round(cor(Gamma[, 1], fitsv$coefficients[3 ,]), 2), alpha = .4, xlab = "True gamma_i1", ylab = "Est. gamma_i1")
+ggplot(plot_df, aes(b1, b1_hat)) + geom_point() + labs(x = "True b_m1", y = "Est. b_m1")
+ggplot(plot_df, aes(b2, b2_hat)) + geom_point() + facet_wrap(~b2_labels) + labs(x = "True b_m2", y = "Est. b_m2")
+ggplot(plot_df, aes(gamma1, gamma1_hat)) + geom_point() + facet_wrap(~gamma1_labels) + labs(x = "True gamma_m1", y = "Est. gamma_m1")
+ggplot(plot_df, aes(gamma2, gamma2_hat)) + geom_point() + facet_wrap(~gamma2_labels) + labs(x = "True gamma_m2", y = "Est. gamma_m2")
+```
 
-effect = c(rep("null", 400), rep("alt", 500), rep("null", 100))
-qplot(Gamma[, 2], fitsv$coefficients[4 ,], color = effect, main = round(cor(Gamma[, 2], fitsv$coefficients[4 ,]), 2), alpha = .4, xlab = "True gamma_i2", ylab = "Est. gamma_i2")
+Not sure what's going on here yet regarding p-values and ranking.
 
+```{r echo=F}
 #just compute p-value of b_12 = 0 using F statistics. 
 pValuesSv = f.pvalue(X, modsv, nullmodsv)
 #double check with existing function:
@@ -119,12 +150,14 @@ qValuesSv = p.adjust(pValuesSv, method = "BH")
 qValuesSV2 = p.adjust(pValuesSV2, method = "BH")
 
 
-plot(1:length(qValuesSV2[1:300])/(length(qValuesSV2[1:300])+1),sort(qValuesSV2[1:300]))
+plot(1:length(qValuesSV2[301:1000])/(length(qValuesSV2[301:1000])+1),sort(qValuesSV2[301:1000]))
 abline(a = 0, b = 1)
-ks.test(qValuesSV2[1:300],"punif",0,1)
 
-table(qValuesSV2[1:300] < .05)
-table(qValuesSV2[301:1000] < .05)
+print(ks.test(qValuesSV2[301:1000],"punif",0,1))
+
+print(table(qValuesSV2[301:1000] < .05))
+print(table(qValuesSV2[1:300] < .05))
+
 
 fstat_rank = rank(-fstat)
 true_rank = rank(-abs(b2))
@@ -132,3 +165,20 @@ true_rank = rank(-abs(b2))
 qplot(true_rank, fstat_rank)
 ```
 
+
+## "Knobs to turn" in this experiment:
+
+$\Gamma_{m, 1}$: If strong effect relative to $b_{m, 1}$, then this will generate noise on control samples.
+
+$\Gamma_{m, 2}$: If strong effect relative to $b_{m, 2}$, then this will generate noise on case samples. 
+
+Our certainty of $\Gamma$ to effect case or control samples depends on "the percentage of row space of $S$ explained by $G$". We appropx that by looking at $cor(G_r, S_2), r = 1, 2$.
+
+### Knob Speculating...
+
+| $\Gamma_{m, 1}$ 	| $\Gamma_{m, 2}$ 	| $cor(G_r, S_2)$ 	| DE               	| Scree plot         	|
+|-----------------	|-----------------	|------------------	|------------------	|--------------------	|
+| strong          	| weak            	| strong           	| more FPs         	| more even PCA      	|
+| weak            	| strong          	| strong           	| more FNs         	| more even PCA      	|
+| weak            	| weak            	| strong           	| neutral          	| more dominated PCA 	|
+| strong          	| strong          	| strong           	| more FPs and FNs 	| more even PCA      	|

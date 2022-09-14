@@ -2,7 +2,9 @@
 title: "Reproduce SVA problem"
 author: "Christopher Lo"
 date: "9/5/2022"
-output: pdf_document
+output:
+  pdf_document: default
+  word_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -14,6 +16,9 @@ library(tidyverse)
 library(recount3)
 library(sva)
 library(limma)
+library(DESeq2)
+library(ggfortify)
+theme_set(theme_bw())
 
 #from https://jhubiostatistics.shinyapps.io/recount3-study-explorer/
 
@@ -54,7 +59,7 @@ determined at 6 and 24 hour time points."
 
 
 
-```{r echo=T, warning=F, message=F}
+```{r echo=T, message=F}
 #1. 
 #Overall design: Matched high-grade (GS=7(4+3)) prostate tumor and adjacent
 #normal specimens from 16 patients (8 AAM and 8 EAM) were subjected to two 
@@ -73,10 +78,30 @@ phenotype$phenotype_tumor = grepl("prostate tumor", phenotype$sra.sample_attribu
 mod_SRP118614 = model.matrix(~phenotype_tumor, data = phenotype)
 
 geneCounts_SRP118614 = assays(rse_gene_SRP118614)$raw_counts
-geneCounts_SRP118614 = geneCounts_SRP118614 / colSums(geneCounts_SRP118614) #normalize by bases sequenced in genes
+dds <- DESeqDataSetFromMatrix(countData = geneCounts_SRP118614, colData = phenotype, design = ~ phenotype_tumor)
+dds <- estimateSizeFactors(dds)
+hist(sizeFactors(dds), 100)
+geneCounts_SRP118614 <- counts(dds, normalized=TRUE)
+#geneCounts_SRP118614 = log(geneCounts_SRP118614 / colSums(geneCounts_SRP118614) + 5) #normalize by bases sequenced in genes
 
 n_sv[1] = num.sv(geneCounts_SRP118614, mod_SRP118614, method = "be", vfilter = 10000)
 n_sv_agg[1] = NA
+
+pca = prcomp(t(geneCounts_SRP118614))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+autoplot(pca, data = phenotype, colour = 'phenotype_tumor')
+
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_SRP118614), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP118614 \nNumber of SVs: ", n_sv[1]))  + ylim(0, 1) 
+
+
+```
+
+Our scree plot threshold lines up with our num.sv estimates quite well here.
+
+```{r echo=T, message=F}
 
 #2.
 #Overall design: Strand specific total RNA seq was performed using frozen 
@@ -97,7 +122,10 @@ phenotype$phenotype_tumor = grepl("Tumor", phenotype$sra.sample_attributes)
 mod_SRP212704 = model.matrix(~phenotype_tumor, data = phenotype)
 
 geneCounts_SRP212704 = assays(rse_gene_SRP212704)$raw_counts
-geneCounts_SRP212704 = geneCounts_SRP212704 / colSums(geneCounts_SRP212704)
+dds <- DESeqDataSetFromMatrix(countData = geneCounts_SRP212704, colData = phenotype, design = ~ phenotype_tumor)
+dds <- estimateSizeFactors(dds)
+hist(sizeFactors(dds), 100)
+geneCounts_SRP212704 <- counts(dds, normalized=TRUE)
 
 geneCounts_2 = cbind(geneCounts_SRP118614, geneCounts_SRP212704)
 mod_2 = rbind(mod_SRP118614, mod_SRP212704)
@@ -105,7 +133,32 @@ mod_2 = rbind(mod_SRP118614, mod_SRP212704)
 n_sv[2] = num.sv(geneCounts_SRP212704, mod_SRP212704, method = "be", vfilter = 10000)
 n_sv_agg[2] = num.sv(geneCounts_2, mod_2, method = "be", vfilter = 10000)
 
+pca = prcomp(t(geneCounts_SRP212704))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+autoplot(pca, data = phenotype, colour = 'phenotype_tumor')
 
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_SRP212704), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP212704 \nNumber of SVs: ", n_sv[2]))  + ylim(0, 1)
+
+pca = prcomp(t(geneCounts_2))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_2), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP118614 + SRP212704 \nNumber of SVs: ", n_sv_agg[2])) + ylim(0, 1)
+
+
+mod_2_ext = as.data.frame(mod_2)
+mod_2_ext$phenotype_tumorTRUE = as.factor(mod_2_ext$phenotype_tumorTRUE)
+mod_2_ext$study = c(rep("study1", ncol(geneCounts_SRP118614)), 
+             rep("study2", ncol(geneCounts_SRP212704)))
+autoplot(pca, data = mod_2_ext, colour = 'study', shape = 'phenotype_tumorTRUE')
+```
+
+```{r echo=T, message=F}
 #3
 #Overall design: We sequenced the transcriptome (polyA+) of 20 prostate cancer 
 #tumors and 10 matched normal tissues using Illumina GAII platform. 
@@ -123,7 +176,11 @@ phenotype$phenotype_tumor = grepl("Prostate cancer tissue", phenotype$sra.sample
 mod_SRP002628 = model.matrix(~phenotype_tumor, data = phenotype)
 
 geneCounts_SRP002628 = assays(rse_gene_SRP002628)$raw_counts
-geneCounts_SRP002628 = geneCounts_SRP002628 / colSums(geneCounts_SRP002628)
+dds <- DESeqDataSetFromMatrix(countData = geneCounts_SRP002628, colData = phenotype, design = ~ phenotype_tumor)
+dds <- estimateSizeFactors(dds)
+hist(sizeFactors(dds), 100)
+geneCounts_SRP002628 <- counts(dds, normalized=TRUE)
+
 
 geneCounts_3 = cbind(geneCounts_SRP118614, geneCounts_SRP212704, geneCounts_SRP002628)
 mod_3 = rbind(mod_SRP118614, mod_SRP212704, mod_SRP002628)
@@ -131,13 +188,37 @@ mod_3 = rbind(mod_SRP118614, mod_SRP212704, mod_SRP002628)
 n_sv[3] = num.sv(geneCounts_SRP002628, mod_SRP002628, method = "be", vfilter = 10000)
 n_sv_agg[3] = num.sv(geneCounts_3, mod_3, method = "be", vfilter = 10000)
 
-#try plotting the SV variables
-svobj = sva(geneCounts_3, mod_3, mod_3[, 1], n.sv = n_sv_agg[3], vfilter = 10000)
-annotate = c(rep("study1", ncol(geneCounts_SRP118614)), 
-             rep("study2", ncol(geneCounts_SRP212704)), 
-             rep("study3", ncol(geneCounts_SRP002628)))
-qplot(svobj$sv[,1], svobj$sv[,2], color = annotate, xlab = "SV1", ylab = "SV2")
 
+pca = prcomp(t(geneCounts_SRP002628))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+autoplot(pca, data = phenotype, colour = 'phenotype_tumor')
+
+
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_SRP002628), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP002628 \nNumber of SVs: ", n_sv[3]))  + ylim(0, 1)
+
+
+pca = prcomp(t(geneCounts_3))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_3), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP118614 + SRP212704 + SRP002628 \nNumber of SVs: ", n_sv_agg[3])) + ylim(0, 1)
+
+
+mod_3_ext = as.data.frame(mod_3)
+mod_3_ext$phenotype_tumorTRUE = as.factor(mod_3_ext$phenotype_tumorTRUE)
+mod_3_ext$study = c(rep("study1", ncol(geneCounts_SRP118614)), 
+             rep("study2", ncol(geneCounts_SRP212704)),
+             rep("study3", ncol(geneCounts_SRP002628)))
+autoplot(pca, data = mod_3_ext, colour = 'study', shape = 'phenotype_tumorTRUE')
+
+```
+
+```{r echo=T, message=F}
 #4
 #We utilized RNA sequencing to test the hypothesis that SFN modifies the 
 #expression of genes that are critical in prostate cancer progression. 
@@ -157,25 +238,72 @@ mod_SRP027258 = model.matrix(~phenotype_tumor, data = phenotype)
 
 
 geneCounts_SRP027258 = assays(rse_gene_SRP027258)$raw_counts
-geneCounts_SRP027258 = geneCounts_SRP027258 / colSums(geneCounts_SRP027258)
+dds <- DESeqDataSetFromMatrix(countData = geneCounts_SRP027258, colData = phenotype, design = ~ phenotype_tumor)
+dds <- estimateSizeFactors(dds)
+hist(sizeFactors(dds), 100)
+geneCounts_SRP027258 <- counts(dds, normalized=TRUE)
+
 
 geneCounts_4 = cbind(geneCounts_SRP118614, geneCounts_SRP212704, geneCounts_SRP002628, geneCounts_SRP027258)
 mod_4 = rbind(mod_SRP118614, mod_SRP212704, mod_SRP002628, mod_SRP027258)
 
-
 n_sv[4] = num.sv(geneCounts_SRP027258, mod_SRP027258, method = "be", vfilter = 10000)
 n_sv_agg[4] = num.sv(geneCounts_4, mod_4, method = "be", vfilter = 10000)
 
-#try plotting the SV variables
-svobj = sva(geneCounts_4, mod_4, mod_4[, 1], n.sv = n_sv_agg[4], vfilter = 10000)
-annotate = c(rep("study1", ncol(geneCounts_SRP118614)), 
-             rep("study2", ncol(geneCounts_SRP212704)), 
+
+pca = prcomp(t(geneCounts_SRP027258))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+autoplot(pca, data = phenotype, colour = 'phenotype_tumor')
+
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_SRP027258), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP027258 \nNumber of SVs: ", n_sv[4]))  + ylim(0, 1)
+
+
+pca = prcomp(t(geneCounts_4))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_4), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP118614 + SRP212704 + SRP002628 + SRP027258 \nNumber of SVs: ", n_sv_agg[4])) + ylim(0, 1)
+
+
+mod_4_ext = as.data.frame(mod_4)
+mod_4_ext$phenotype_tumorTRUE = as.factor(mod_4_ext$phenotype_tumorTRUE)
+mod_4_ext$study = c(rep("study1", ncol(geneCounts_SRP118614)), 
+             rep("study2", ncol(geneCounts_SRP212704)),
              rep("study3", ncol(geneCounts_SRP002628)),
              rep("study4", ncol(geneCounts_SRP027258)))
-qplot(svobj$sv[,1], svobj$sv[,2], color = annotate, xlab = "SV1", ylab = "SV2")
+autoplot(pca, data = mod_4_ext, colour = 'study', shape = 'phenotype_tumorTRUE')
 
 ```
 
+What if we combine all the studies together before normalization?
+
+```{r echo=F}
+all = cbind(assays(rse_gene_SRP118614)$raw_counts, assays(rse_gene_SRP212704)$raw_counts,
+            assays(rse_gene_SRP002628)$raw_counts, assays(rse_gene_SRP027258)$raw_counts)
+dds <- DESeqDataSetFromMatrix(countData = all, colData = mod_4_ext, design = ~ phenotype_tumorTRUE)
+dds <- estimateSizeFactors(dds)
+counts <- counts(dds, normalized=TRUE)
+
+
+
+
+pca = prcomp(t(counts))
+variance = pca$sdev^2 / sum(pca$sdev^2)
+variance = variance[1:10]
+
+qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+  geom_hline(yintercept=1/ncol(geneCounts_4), linetype = "dashed") +
+  xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("SRP118614 + SRP212704 + SRP002628 + SRP027258 normalized together \nNumber of SVs: ", num.sv(counts, mod_4, method = "be", vfilter = 10000))) + ylim(0, 1)
+
+autoplot(pca, data = mod_4_ext, colour = 'study', shape = 'phenotype_tumorTRUE')
+
+
+```
 
 ## Results
 
