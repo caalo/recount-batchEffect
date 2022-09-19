@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(sva)
 library(tidyverse)
 library(invgamma)
+theme_set(theme_bw())
 ```
 
 # Simulation Set-Up
@@ -34,12 +35,15 @@ Case effect for DE genes $m=1:300$: $b_{m, 2} \sim N(3, 1)$
 
 Case effect for Non-DE genes $m=301:1000$: $b_{m, 2} \sim N(0, 2)$
 
-Latent design matrix (kernel) $G$: $G_{r, n} \sim Bernoulli(.2), n=1:10$. $G_{r, n} \sim Bernoulli(.7), n=11:20$, where $r = 1, 2$. (This ensures correlation between the two design matrices.)
+Latent design matrix (kernel) $G$: $G_{r, n} \sim Bernoulli(.2), n=1:10$. $G_{r, n} \sim Bernoulli(.8), n=11:20$, where $r = 1, 2$. (This ensures correlation between the two design matrices.)
 
-Latent effect 1: $\Gamma_{m, 1} \sim N(0, 1), m=1:300$,  $\Gamma_{m, 1} \sim N(1, 2.5), m=301:1000$. (Overlaps with Non-DE genes, will lead to FPs if not corrected)
+Latent effect 1: $\Gamma_{m, 1} \sim N(0, 1), m=1:300$,  $\Gamma_{m, 1} \sim N(1, 2), m=301:1000$. (Positive signal overlaps with Non-DE genes, will lead to FPs if not corrected)
 
-Latent effect 2: $\Gamma_{m, 2} \sim N(-1, 2.5), m=1:300$, $\Gamma_{m, 2} \sim N(0, 1), m=301:1000$. (Overlaps with Non-DE  genes, will lead to FNs if not corrected)
+Latent effect 2: $\Gamma_{m, 2} \sim N(-1, 2), m=1:300$, $\Gamma_{m, 2} \sim N(0, 1), m=301:1000$. (Negative signal overlaps with DE genes, will lead to FNs if not corrected)
 
+Therefore, for every gene, whether it is DE or not, it will be affected by one of the two latent variables 
+
+To ask/consider: When there's no effect, should we use $N(0, 1)$, or should we just use $0$?
 
 ```{r echo=F}
 set.seed(2023)
@@ -53,19 +57,19 @@ U = rnorm(n, mean = 0, sd = 1)
 
 b1 = rnorm(m, mean = 0, sd = 1) #intercept
 b2 = mapply(mu = c(rep(3, 300), rep(0, m - 300)),
-             sigma = c(rep(1, 300), rep(2, m - 300)),
+             sigma = c(rep(1, 300), rep(1, m - 300)),
              function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
 B = cbind(b1, b2)
 S = matrix(c(rep(1, n), rep(0, 10), rep(1, 10)), byrow = T, ncol = n)
 
-gamma1 = mapply(mu = c(rep(0, 300), rep(1, m - 300)),
-             sigma = c(rep(1, 300), rep(2.5, m - 300)),
+gamma1 = mapply(mu = c(rep(0, 300), rep(1.5, m - 300)),
+             sigma = c(rep(1, 300), rep(2, m - 300)),
              function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
-gamma1 = mapply(mu = c(rep(-1, 300), rep(0, m - 300)),
-             sigma = c(rep(2.5, 300), rep(1, m - 300)),
+gamma2 = mapply(mu = c(rep(-1.5, 300), rep(0, m - 300)),
+             sigma = c(rep(2, 300), rep(1, m - 300)),
              function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
 Gamma = cbind(gamma1, gamma2)
-G = mapply(p = c(rep(.2, 10), rep(.7, 10)), #no need for intercept for kernel G. 
+G = mapply(p = c(rep(.2, 10), rep(.8, 10)), #no need for intercept for kernel G. 
            function(p) rbernoulli(2, p))
 
 
@@ -83,12 +87,9 @@ Todo: ranks of top genes code unsure right now.
 
 ```{r echo=T, warning=F, message=F}
 n.sv = num.sv(X, t(S), method = "be")
-cat("Method be: Number of SVs: ", n.sv, "\n")
+cat("Number of SVs: ", n.sv, "\n")
 
-cat("Correlation of primary vs. latent variable 1: ", cor(G[1 ,], S[2 ,]), "\n")
-cat("Correlation of primary vs. latent variable 1: ", cor(G[2 ,], S[2 ,]), "\n")
-
-pca = prcomp(X)
+pca = prcomp(t(X))
 variance = pca$sdev^2 / sum(pca$sdev^2)
 qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
   geom_hline(yintercept=1/ncol(X), linetype = "dashed") +
@@ -168,17 +169,127 @@ qplot(true_rank, fstat_rank)
 
 ## "Knobs to turn" in this experiment:
 
-$\Gamma_{m, 1}$: If strong effect relative to $b_{m, 1}$, then this will generate noise on control samples.
+$\Gamma_{m, 1}$: If strong effect relative to $b_{m, 1}$ (fixed), then this will generate noise on control samples, leading to false positives. 
 
-$\Gamma_{m, 2}$: If strong effect relative to $b_{m, 2}$, then this will generate noise on case samples. 
+$\Gamma_{m, 2}$: If strong effect relative to $b_{m, 2}$ (fixed), then this will generate noise on case samples, leading to false negatives.
 
-Our certainty of $\Gamma$ to effect case or control samples depends on "the percentage of row space of $S$ explained by $G$". We appropx that by looking at $cor(G_r, S_2), r = 1, 2$.
+Our certainty of $\Gamma$ to effect case or control samples depends on "the percentage of row space of $S$ explained by $G$". We appropx that by looking at $cor(G_r, S_2), r = 1, 2$. We probably can fix this value for now.
 
-### Knob Speculating...
 
-| $\Gamma_{m, 1}$ 	| $\Gamma_{m, 2}$ 	| $cor(G_r, S_2)$ 	| DE               	| Scree plot         	|
+
+### Knob Speculation, within one experiment
+
+| $\Gamma_{m, 1}$ 	| $\Gamma_{m, 2}$ 	| $cor(G_r, S_2)$ 	| **DE**           	| **Scree plot**     	|
 |-----------------	|-----------------	|------------------	|------------------	|--------------------	|
 | strong          	| weak            	| strong           	| more FPs         	| more even PCA      	|
 | weak            	| strong          	| strong           	| more FNs         	| more even PCA      	|
 | weak            	| weak            	| strong           	| neutral          	| more dominated PCA 	|
 | strong          	| strong          	| strong           	| more FPs and FNs 	| more even PCA      	|
+
+
+# Simnulation with multiple experiments
+
+$$X = B_1 S_1 + \Gamma_1 G_1 + \alpha(B_2 S_2 + \Gamma_2 G_2) +  U$$ 
+
+where $B_i$ and $\Gamma_i$ are the same shape and dimension of $B$ and $\Gamma$ as before.
+
+$S_1$ is the design matrix of the primary variables of the first experiment, elongated to $0$s for the second experiment. 
+etc.
+
+We keep $cor(G_{ir}, S_{i2})$ at the same strength.
+
+
+```{r}
+set.seed(2023)
+m = 1000 #number of genes (tests)
+n = 20 #number of samples
+r = 2 #number of latent variables per studies
+s = 2 #number of studies
+
+DE_effect = 5
+simulation = expand.grid(alpha = c(.5, 1, seq(2, 50, 8)), #effect of the second experiment relative to the first. 
+                         gamma = c(.5, seq(1, 30, 2))) #effect of latent variables, relative to DE_effect
+simulation$n.sv = NA
+simulation$num_PC_signif = NA
+simulation$var_explained_PC1 = NA
+
+for(i in 1:nrow(simulation)) {
+  alpha = simulation$alpha[i]
+  gamma = simulation$gamma[i]
+  #cat(alpha, "\t", gamma, "\n")
+  
+  #generate data
+  U = rnorm(n * s, mean = 0, sd = 1)
+  
+  b11 = rnorm(m, mean = 0, sd = 1) #intercept
+  b12 = mapply(mu = c(rep(DE_effect, 300), rep(0, m - 300)),
+               sigma = c(rep(1, 300), rep(1, m - 300)),
+               function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+  B1 = cbind(b11, b12)
+  b21 = rnorm(m, mean = 0, sd = 1)
+  b22 = mapply(mu = c(rep(DE_effect, 300), rep(0, m - 300)),
+               sigma = c(rep(1, 300), rep(1, m - 300)),
+               function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+  B2 = cbind(b21, b22)
+  
+  
+  S1 = matrix(c(rep(1, n), rep(0, n), rep(0, n/2), rep(1, n/2), rep(0, n)), byrow = T, ncol = s*n)
+  S2 = matrix(c(rep(0, n), rep(1, n), rep(0, n), rep(0, n/2), rep(1, n/2)), byrow = T, ncol = s*n)
+  
+  gamma11 = mapply(mu = c(rep(0, 300), rep(gamma, m - 300)),
+               sigma = c(rep(1, 300), rep(1, m - 300)),
+               function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+  gamma12 = mapply(mu = c(rep(-gamma, 300), rep(0, m - 300)),
+               sigma = c(rep(1, 300), rep(1, m - 300)),
+               function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+  Gamma1 = cbind(gamma11, gamma12)
+  gamma21 = mapply(mu = c(rep(0, 300), rep(gamma, m - 300)),
+               sigma = c(rep(1, 300), rep(1, m - 300)),
+               function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+  gamma22 = mapply(mu = c(rep(-gamma, 300), rep(0, m - 300)),
+               sigma = c(rep(1, 300), rep(1, m - 300)),
+               function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
+  Gamma2 = cbind(gamma21, gamma22)
+  
+  G_zeros = matrix(rep(0, n*2), byrow = T, ncol = n)
+  G1 = cbind(mapply(p = c(rep(.2, 10), rep(.8, 10)), 
+             function(p) rbinom(2, 1, p)), G_zeros)
+  G2 = cbind(G_zeros, mapply(p = c(rep(.2, 10), rep(.8, 10)),
+             function(p) rbinom(2, 1, p)))
+  
+  X = B1 %*% S1 + Gamma1 %*% G1 + alpha * (B2 %*% S2 + Gamma2 %*% G2) + U
+  
+  #Normalize
+  
+  
+  #Inference
+  S_merged = cbind(S1[, 1:n], S2[, (n+1):(2*n)])
+  simulation$n.sv[i] = num.sv(X, t(S_merged), method = "be")
+  pca = prcomp(t(X))
+  variance = pca$sdev^2 / sum(pca$sdev^2)
+  simulation$num_PC_signif[i] = length(which(variance > 1/ncol(X)))
+  simulation$var_explained_PC1[i] = variance[1]
+}
+```
+```{r}
+ggplot(simulation, aes(x = num_PC_signif, y = n.sv)) + geom_point() + ggtitle("Expected SV: 5")
+
+ggplot(simulation, aes(x = as.factor(alpha/DE_effect), y = as.factor(gamma/DE_effect), fill =  n.sv)) + geom_tile() + 
+  labs(x = "Noise:Signal of study effect = alpha/DE_effect",
+       y = "Noise:Signal of latent variables = gamma/DE_effect") +
+   ggtitle("Expected SV: 5")
+
+ggplot(simulation, aes(x = as.factor(alpha), y = as.factor(gamma), fill = n.sv)) + geom_tile(width = 1) + 
+  labs(x = "Study effect alpha",
+       y = "Latent variables effect gamma") +
+   ggtitle("Expected SV: 5, DE effect: 3")
+
+ggplot(simulation, aes(x =  as.factor(alpha/DE_effect), y = as.factor(gamma/DE_effect), fill = var_explained_PC1)) + geom_tile() + 
+  labs(x = "Noise:Signal of study effect = alpha/DE_effect",
+       y = "Noise:Signal of latent variables = gamma/DE_effect") +
+   ggtitle("Expected SV: 5")
+
+```
+
+
+

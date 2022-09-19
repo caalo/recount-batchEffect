@@ -129,9 +129,12 @@ geneCounts_SRP212704 <- counts(dds, normalized=TRUE)
 
 geneCounts_2 = cbind(geneCounts_SRP118614, geneCounts_SRP212704)
 mod_2 = rbind(mod_SRP118614, mod_SRP212704)
+mod_2_ext = as.data.frame(mod_2)
+mod_2_ext$study = c(rep(0, ncol(geneCounts_SRP118614)), 
+             rep(1, ncol(geneCounts_SRP212704)))
 
 n_sv[2] = num.sv(geneCounts_SRP212704, mod_SRP212704, method = "be", vfilter = 10000)
-n_sv_agg[2] = num.sv(geneCounts_2, mod_2, method = "be", vfilter = 10000)
+n_sv_agg[2] = num.sv(geneCounts_2, as.matrix(mod_2_ext), method = "be", vfilter = 10000)
 
 pca = prcomp(t(geneCounts_SRP212704))
 variance = pca$sdev^2 / sum(pca$sdev^2)
@@ -153,8 +156,8 @@ qplot(c(1:length(variance)), variance) + geom_line() + geom_point() +
 
 mod_2_ext = as.data.frame(mod_2)
 mod_2_ext$phenotype_tumorTRUE = as.factor(mod_2_ext$phenotype_tumorTRUE)
-mod_2_ext$study = c(rep("study1", ncol(geneCounts_SRP118614)), 
-             rep("study2", ncol(geneCounts_SRP212704)))
+mod_2_ext$study = as.factor(c(rep(0, ncol(geneCounts_SRP118614)), 
+             rep(1, ncol(geneCounts_SRP212704))))
 autoplot(pca, data = mod_2_ext, colour = 'study', shape = 'phenotype_tumorTRUE')
 ```
 
@@ -184,9 +187,15 @@ geneCounts_SRP002628 <- counts(dds, normalized=TRUE)
 
 geneCounts_3 = cbind(geneCounts_SRP118614, geneCounts_SRP212704, geneCounts_SRP002628)
 mod_3 = rbind(mod_SRP118614, mod_SRP212704, mod_SRP002628)
+mod_3_ext = as.data.frame(mod_3)
+study = c(rep(0, ncol(geneCounts_SRP118614)), 
+          rep(1, ncol(geneCounts_SRP212704)),
+          rep(2, ncol(geneCounts_SRP002628)))
+mod_3_ext$study2 = ifelse(study == 1, 1, 0)
+mod_3_ext$study3 = ifelse(study == 2, 1, 0)
 
 n_sv[3] = num.sv(geneCounts_SRP002628, mod_SRP002628, method = "be", vfilter = 10000)
-n_sv_agg[3] = num.sv(geneCounts_3, mod_3, method = "be", vfilter = 10000)
+n_sv_agg[3] = num.sv(geneCounts_3, as.matrix(mod_3_ext), method = "be", vfilter = 10000)
 
 
 pca = prcomp(t(geneCounts_SRP002628))
@@ -246,9 +255,16 @@ geneCounts_SRP027258 <- counts(dds, normalized=TRUE)
 
 geneCounts_4 = cbind(geneCounts_SRP118614, geneCounts_SRP212704, geneCounts_SRP002628, geneCounts_SRP027258)
 mod_4 = rbind(mod_SRP118614, mod_SRP212704, mod_SRP002628, mod_SRP027258)
+mod_4_ext = as.data.frame(mod_4)
+study = c(rep(0, ncol(geneCounts_SRP118614)), 
+          rep(1, ncol(geneCounts_SRP212704)),
+          rep(2, ncol(geneCounts_SRP002628)),
+          rep(3, ncol(geneCounts_SRP027258)))
+mod_4_ext$study2 = ifelse(study == 1, 1, 0)
+mod_4_ext$study3 = ifelse(study == 2, 1, 0)
 
 n_sv[4] = num.sv(geneCounts_SRP027258, mod_SRP027258, method = "be", vfilter = 10000)
-n_sv_agg[4] = num.sv(geneCounts_4, mod_4, method = "be", vfilter = 10000)
+n_sv_agg[4] = num.sv(geneCounts_4, as.matrix(mod_4_ext), method = "be", vfilter = 10000)
 
 
 pca = prcomp(t(geneCounts_SRP027258))
