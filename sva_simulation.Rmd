@@ -12,14 +12,15 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r echo=F, message=F, warning=F}
 library(sva)
 library(tidyverse)
-library(invgamma)
+library(DESeq2)
 theme_set(theme_bw())
 ```
 
-# Simulation Set-Up
 
 Simulation studies inspired from
 *"A general framework for multiple testing dependence"* (Leek et al. 2008)
+
+# Simulation Set-Up, one single experiment
 
 We generate $X$ from the following model: $$X = BS + \Gamma G + U$$ 
 
@@ -43,7 +44,14 @@ Latent effect 2: $\Gamma_{m, 2} \sim N(-1, 2), m=1:300$, $\Gamma_{m, 2} \sim N(0
 
 Therefore, for every gene, whether it is DE or not, it will be affected by one of the two latent variables 
 
-To ask/consider: When there's no effect, should we use $N(0, 1)$, or should we just use $0$?
+**To ask/consider: **
+
+-   When there's no effect, should we use $N(0, 1)$, or should we just use $0$?
+
+-   Currently we have negative expression due to Latent effect 2.
+
+-   Should we normalize before running analysis?
+
 
 ```{r echo=F}
 set.seed(2023)
@@ -51,8 +59,6 @@ m = 1000 #number of genes (tests)
 n = 20 #number of samples
 r = 2
 
-#sigma_i = rinvgamma(m, 10, 9)
-#U = t(sapply(sigma_i, function(x) rnorm(n, mean = 0, sd = x)))
 U = rnorm(n, mean = 0, sd = 1)
 
 b1 = rnorm(m, mean = 0, sd = 1) #intercept
@@ -72,18 +78,10 @@ Gamma = cbind(gamma1, gamma2)
 G = mapply(p = c(rep(.2, 10), rep(.8, 10)), #no need for intercept for kernel G. 
            function(p) rbernoulli(2, p))
 
-
 X = B %*% S + Gamma %*% G + U
-
-
 ```
 
-# Run SVA and regression to estimate parameters and SVs
-
-We look at the number of SVs estimated, whether the latent variables are spanned by the estimated SVs, the recovered regression coefficients, the null p-value distribution, and the ranks of top genes. 
-
-Todo: ranks of top genes code unsure right now. 
-
+# Estimate the number of SVs:
 
 ```{r echo=T, warning=F, message=F}
 n.sv = num.sv(X, t(S), method = "be")
@@ -96,7 +94,18 @@ qplot(c(1:length(variance)), variance) + geom_line() + geom_point() +
   xlab("Principal Component") + ylab("Variance Explained") + ggtitle(paste0("Number of SVs: ", n.sv)) + ylim(0, 1)
 ```
 
-```{r echo=T, warning=F, message=F, fig.width=8, fig.height=5}
+# Estimate SVs, primary variable coefficients, and SV coefficients
+
+-   Are latent variables are spanned by the estimated SVs?
+
+-   Are the estimated coefficients similar to true coefficients?
+
+-   Is the null p-value distribution uniform?
+
+-   Do the ranks of top genes match?
+
+
+```{r echo=T, warning=F, message=F}
 
 nullMod = t(S)[, 1]
 svobj = sva(X, t(S), nullMod, n.sv = n.sv)
@@ -131,6 +140,10 @@ ggplot(plot_df, aes(gamma2, gamma2_hat)) + geom_point() + facet_wrap(~gamma2_lab
 
 Not sure what's going on here yet regarding p-values and ranking.
 
+-   Why does `f.pvalue()` function look very different than `anova()` function?
+
+-   Why are we getting no p values < .05?
+
 ```{r echo=F}
 #just compute p-value of b_12 = 0 using F statistics. 
 pValuesSv = f.pvalue(X, modsv, nullmodsv)
@@ -151,13 +164,14 @@ qValuesSv = p.adjust(pValuesSv, method = "BH")
 qValuesSV2 = p.adjust(pValuesSV2, method = "BH")
 
 
-plot(1:length(qValuesSV2[301:1000])/(length(qValuesSV2[301:1000])+1),sort(qValuesSV2[301:1000]))
+#plot(1:length(qValuesSV2[301:1000])/(length(qValuesSV2[301:1000])+1),sort(qValuesSV2[301:1000]))
+plot(1:length(pValuesSV2[301:1000])/(length(pValuesSV2[301:1000])+1),sort(pValuesSV2[301:1000]))
 abline(a = 0, b = 1)
-
-print(ks.test(qValuesSV2[301:1000],"punif",0,1))
-
-print(table(qValuesSV2[301:1000] < .05))
-print(table(qValuesSV2[1:300] < .05))
+# 
+# print(ks.test(qValuesSV2[301:1000],"punif",0,1))
+# 
+# print(table(qValuesSV2[301:1000] < .05))
+# print(table(qValuesSV2[1:300] < .05))
 
 
 fstat_rank = rank(-fstat)
@@ -167,7 +181,7 @@ qplot(true_rank, fstat_rank)
 ```
 
 
-## "Knobs to turn" in this experiment:
+## "Knobs to turn" in estimating the number of SVs
 
 $\Gamma_{m, 1}$: If strong effect relative to $b_{m, 1}$ (fixed), then this will generate noise on control samples, leading to false positives. 
 
@@ -187,16 +201,16 @@ Our certainty of $\Gamma$ to effect case or control samples depends on "the perc
 | strong          	| strong          	| strong           	| more FPs and FNs 	| more even PCA      	|
 
 
-# Simnulation with multiple experiments
+# Simulation with multiple experiments
 
 $$X = B_1 S_1 + \Gamma_1 G_1 + \alpha(B_2 S_2 + \Gamma_2 G_2) +  U$$ 
 
-where $B_i$ and $\Gamma_i$ are the same shape and dimension of $B$ and $\Gamma$ as before.
+where $B_i$ and $\Gamma_i$ are the same shape and distributions of $B$ and $\Gamma$ as before.
 
 $S_1$ is the design matrix of the primary variables of the first experiment, elongated to $0$s for the second experiment. 
 etc.
 
-We keep $cor(G_{ir}, S_{i2})$ at the same strength.
+We keep $cor(G_{ir}, S_{i2})$ at the same strength, and vary the SV effect $\Gamma_{m, 1}$, $\Gamma_{m, 2}$, and the study effect, $\alpha$
 
 
 ```{r}
@@ -207,7 +221,7 @@ r = 2 #number of latent variables per studies
 s = 2 #number of studies
 
 DE_effect = 5
-simulation = expand.grid(alpha = c(.5, 1, seq(2, 50, 8)), #effect of the second experiment relative to the first. 
+simulation = expand.grid(alpha = c(.5, seq(1, 40, 2)), #effect of the second experiment relative to the first. 
                          gamma = c(.5, seq(1, 30, 2))) #effect of latent variables, relative to DE_effect
 simulation$n.sv = NA
 simulation$num_PC_signif = NA
@@ -257,13 +271,17 @@ for(i in 1:nrow(simulation)) {
   G2 = cbind(G_zeros, mapply(p = c(rep(.2, 10), rep(.8, 10)),
              function(p) rbinom(2, 1, p)))
   
+  
   X = B1 %*% S1 + Gamma1 %*% G1 + alpha * (B2 %*% S2 + Gamma2 %*% G2) + U
-  
+  S_merged = cbind(S1[, 1:n], S2[, (n+1):(2*n)])
+
   #Normalize
-  
+  # X[X < 0] = 0
+  # dds <- DESeqDataSetFromMatrix(countData = X, colData = t(S_merged), design = ~t(S_merged)[, 2])
+  # dds <- estimateSizeFactors(dds)
+  # geneCountsNormalized <- counts(dds, normalized = TRUE)
   
   #Inference
-  S_merged = cbind(S1[, 1:n], S2[, (n+1):(2*n)])
   simulation$n.sv[i] = num.sv(X, t(S_merged), method = "be")
   pca = prcomp(t(X))
   variance = pca$sdev^2 / sum(pca$sdev^2)
@@ -271,6 +289,7 @@ for(i in 1:nrow(simulation)) {
   simulation$var_explained_PC1[i] = variance[1]
 }
 ```
+
 ```{r}
 ggplot(simulation, aes(x = num_PC_signif, y = n.sv)) + geom_point() + ggtitle("Expected SV: 5")
 

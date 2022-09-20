@@ -1,0 +1,170 @@
+---
+title: "SVA Recount"
+author: "Christopher Lo"
+date: "9/19/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=F, message=F, warning=F}
+library(tidyverse)
+library(recount3)
+library(sva)
+library(DESeq2)
+library(ggfortify)
+theme_set(theme_bw())
+```
+
+
+## Introduction
+
+*What happens to the number of Surrogate Variables as we increase the number of studies in recount3?*
+
+To illustrate this, we examined 4 studies that involved case/control prostate tumor and normal samples,
+with a minimal of 25 samples per study. For each study, we examined the number of SVs (using method = "be"), 
+and we also aggregated them one by one and examined the number of SVs. 
+
+1.    SRP118614: "Overall design: Matched high-grade (GS=7(4+3)) prostate tumor and adjacent
+normal specimens from 16 patients (8 AAM and 8 EAM) were subjected to two 
+replicate runs of RNA-sequencing."
+
+2.    SRP002628: "Overall design: We sequenced the transcriptome (polyA+) of 20 prostate cancer 
+tumors and 10 matched normal tissues using Illumina GAII platform. 
+Then we used bioinformatic approaches to identify prostate cancer specific 
+aberrations which include gene fusion, alternative splicing, somatic mutation."
+
+3.    SRP212704: "Overall design: Strand specific total RNA seq was performed using frozen 
+patient matched prostate cancer tissue in biological duplicates.
+Purpose: The goal of present study is to compare transcript level changes
+between normal and tumor of same individuals"  
+
+4.    SRP027258: "We utilized RNA sequencing to test the hypothesis that SFN modifies the 
+expression of genes that are critical in prostate cancer progression. 
+Normal prostate epithelial cells, and androgen-dependent and androgen-independent 
+prostate cancer cells were treated with 15 µM SFN and the transcriptome was 
+determined at 6 and 24 hour time points."
+
+
+```{r echo=F, message=F}
+#Setup recount3
+human_projects <- available_projects()
+```
+
+```{r echo=F, message=F}
+#Studies we want to look at, and what we should grep for to find the case status
+#under "sra.sample_attributes"
+study_info = data.frame(studyName = c("SRP118614", "SRP002628", "SRP212704", "SRP027258"),
+                        caseStatus_grep = c("prostate tumor", "Prostate cancer tissue", "Tumor", "prostate cancer"))
+```
+
+
+```{r echo=F, message=F}
+#Define analysis functions.
+
+analyzeSingleStudy = function(studyName, caseStatus_grep) {
+  #Load in phenotype metadata
+  proj_info <- subset(human_projects, project == studyName)
+  rse_gene <- create_rse(proj_info)
+  phenotype = data.frame(colData(rse_gene))
+  phenotype$phenotype_tumor = grepl(caseStatus_grep, phenotype$sra.sample_attributes)
+  mod = model.matrix(~phenotype_tumor, data = phenotype)
+  #Load in raw counts, and nomralize it via sizeFactors from DESeq. 
+  geneCounts = assays(rse_gene)$raw_counts
+  dds <- DESeqDataSetFromMatrix(countData = geneCounts, colData = phenotype, design = ~ phenotype_tumor)
+  dds <- estimateSizeFactors(dds)
+  geneCountsNormalized <- counts(dds, normalized = TRUE)
+  #Summary statistics of sizeFactors. 
+  print("SizeFactor distribution:")
+  print(summary(sizeFactors(dds)))
+  
+  #SVA analysis
+  n.sv = num.sv(geneCountsNormalized, mod, method = "be", vfilter = 10000)
+  #PCA analysis
+  pca = prcomp(t(geneCountsNormalized))
+  variance = pca$sdev^2 / sum(pca$sdev^2)
+  variance = variance[1:10]
+  #PCA plots
+  g = qplot(c(1:length(variance)), variance) + geom_line() + geom_point() +
+        geom_hline(yintercept = 1/ncol(geneCounts), linetype = "dashed") +
+        xlab("Principal Component") + ylab("Variance Explained") + 
+        ggtitle(paste0(studyName, "\nNumber of SVs: ", n.sv))  + 
+        ylim(0, 1)
+  print(g)
+  print(autoplot(pca, data = phenotype, colour = 'phenotype_tumor'))
+
+  return(list(n.sv = n.sv,
+              geneCounts = geneCounts, #return raw counts. 
+              mod = mod))
+}
+```
+
+
+```{r echo=F, message=F}
+#Define analysis functions.
+
+analyzeMultipleStudies = function(mods, geneCounts, studyNames) {
+  stopifnot(class(mods) == "list", class(geneCounts) == "list", class(studyNames) == "character")
+  stopifnot(length(mods) > 1, length(geneCounts) > 1, length(studyNames) > 1)
+  
+  #Get study variable
+  studyNamesLong = character()
+  for(j in 1:length(studyNames)) {
+    studyNamesLong = c(studyNamesLong,
+                       rep(studyNames[j], ncol(geneCounts[[j]])))
+  }
+  
+  #Collapse list to dataframe
+  geneCounts = do.call(cbind, geneCounts)
+  mods = do.call(rbind, mods)
+  
+  #normalize across studies
+  dds <- DESeqDataSetFromMatrix(countData = geneCounts, colData = mods, design = ~ phenotype_tumorTRUE)
+  dds <- estimateSizeFactors(dds)
+  geneCountsNormalized <- counts(dds, normalized=TRUE)
+  
+  #SVA analysis
+  n.sv = num.sv(geneCountsNormalized, as.matrix(mods), method = "be", vfilter = 10000)
+  #PCA analysis
+  pca = prcomp(t(geneCountsNormalized))
+  variance = pca$sdev^2 / sum(pca$sdev^2)
+  variance = variance[1:10]
+  #PCA plots
+  g = qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
+        geom_hline(yintercept = 1/ncol(geneCounts), linetype = "dashed") +
+        xlab("Principal Component") + ylab("Variance Explained") + 
+        ggtitle(paste0(studyNames, collapse = " + "),
+                subtitle = paste0("Number of SVs: ", n.sv)) + 
+        ylim(0, 1)
+  print(g)
+
+  mods = as.data.frame(mods)
+  mods$studyName = studyNamesLong
+  mods$phenotype_tumorTRUE = as.factor(mods$phenotype_tumorTRUE)
+  print(autoplot(pca, data = mods, colour = 'studyName', shape = 'phenotype_tumorTRUE'))
+}
+```
+
+## Analysis
+
+```{r echo=F, message=F}
+#Run analysis here.
+
+agg_mods = list()
+agg_geneCounts = list()
+
+
+for(i in 1:nrow(study_info)) {
+  study_i = analyzeSingleStudy(study_info$studyName[i], 
+                               study_info$caseStatus_grep[i])
+  
+  agg_mods[[i]] = study_i$mod
+  agg_geneCounts[[i]] = study_i$geneCounts
+  
+  if(i > 1)
+    analyzeMultipleStudies(agg_mods, agg_geneCounts, study_info$studyName[1:i])
+}
+```
+
