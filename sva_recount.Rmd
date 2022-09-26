@@ -14,6 +14,7 @@ library(tidyverse)
 library(recount3)
 library(sva)
 library(DESeq2)
+library(gridExtra)
 library(ggfortify)
 theme_set(theme_bw())
 ```
@@ -47,6 +48,16 @@ Normal prostate epithelial cells, and androgen-dependent and androgen-independen
 prostate cancer cells were treated with 15 µM SFN and the transcriptome was 
 determined at 6 and 24 hour time points."
 
+We also have a second case/control set on TB samples. 
+
+1.    SRP098758 (n=428): "Samples are collected from subjects in a household contact study after a person comes back to the household, diagnosed with TB. Samples are collected every 6 months up to, 18 months. Some people go on to develop TB (cases) where as some others do not (controls). Here we are trying to establish a gene signature to predict the occurrence of TB."
+
+2.    ERP115010 (n=360): "Close contacts of active TB were defined as individuals with a cumulative duration of exposure of greater than eight hours in a confined space to the index case prior to initiation of treatment. Known human immunodeficiency virus (HIV)-positive patients were excluded. At enrollment, interferon gamma release assays (IGRAs) were done using the QuantiFERON-TB Plus assay (Qiagen, Germany), and peripheral blood was collected into Tempus tubes for whole genome transcriptional profiling by RNA sequencing. Participants who progressed to active TB were identified by linkage with the national electronic TB register. Local case notes were reviewed to identify individuals who had received preventative treatment. This submission contains data from n=360 adult participants, of which n=9 progressed to TB during a median follow-up time of 1.9 years. [note: we identify case base on IGRA assay result, which does not distinguish active vs. latent TB. ]
+
+3. SRP126580 (n=54): "Overall design: We undertook RNA Sequencing (RNA-Seq) of our earlier Berry et al. 2010 (GSE19444 and GSE19442) cohorts and additionally set up a prospective cohort study at Leicester (UK) in subject groups of incident TB and recent TB contacts, respectively. In the Leicester cohort, we performed systematic longitudinal sampling and clinical characterisation first, to validate our TB signature using RNA-Seq in a new and independent cohort of individuals with active TB and LTBI, and secondly to provide longitudinal data in a low TB incidence setting. All samples in this series were re-analyzed from GSE19444. There are links on each sample page to the original sample." [*QC note: 28% of genes have count of 0*]
+
+
+
 
 ```{r echo=F, message=F}
 #Setup recount3
@@ -56,36 +67,39 @@ human_projects <- available_projects()
 ```{r echo=F, message=F}
 #Studies we want to look at, and what we should grep for to find the case status
 #under "sra.sample_attributes"
-study_info = data.frame(studyName = c("SRP118614", "SRP002628", "SRP212704", "SRP027258"),
+prostateCancerStudies = data.frame(studyName = c("SRP118614", "SRP002628", "SRP212704", "SRP027258"),
                         caseStatus_grep = c("prostate tumor", "Prostate cancer tissue", "Tumor", "prostate cancer"))
+
+TB_Studies = data.frame(studyName = c("SRP098758", "ERP115010", "SRP126580"),
+                        caseStatus_grep = c("case", "positive", "Active_TB"))
 ```
 
 
 ```{r echo=F, message=F}
 #Define analysis functions.
 
-analyzeSingleStudy = function(studyName, caseStatus_grep) {
+analyzeSingleStudy = function(studyName, caseStatus_grep, logPlot = F) {
   #Load in phenotype metadata
   proj_info <- subset(human_projects, project == studyName)
   rse_gene <- create_rse(proj_info)
   phenotype = data.frame(colData(rse_gene))
-  phenotype$phenotype_tumor = grepl(caseStatus_grep, phenotype$sra.sample_attributes)
-  mod = model.matrix(~phenotype_tumor, data = phenotype)
+  phenotype$caseStatus = grepl(caseStatus_grep, phenotype$sra.sample_attributes)
+  mod = model.matrix(~caseStatus, data = phenotype)
   #Load in raw counts, and nomralize it via sizeFactors from DESeq. 
   geneCounts = assays(rse_gene)$raw_counts
-  dds <- DESeqDataSetFromMatrix(countData = geneCounts, colData = phenotype, design = ~ phenotype_tumor)
+  dds <- DESeqDataSetFromMatrix(countData = geneCounts, colData = phenotype, design = ~ caseStatus)
   dds <- estimateSizeFactors(dds)
   geneCountsNormalized <- counts(dds, normalized = TRUE)
   #Summary statistics of sizeFactors. 
   print("SizeFactor distribution:")
   print(summary(sizeFactors(dds)))
   
-  #SVA analysis
-  n.sv = num.sv(geneCountsNormalized, mod, method = "be", vfilter = 10000)
+  #Estimate number of SVs
+  n.sv = num.sv(geneCountsNormalized, mod, method = "be", vfilter = 3000)
   #PCA analysis
   pca = prcomp(t(geneCountsNormalized))
   variance = pca$sdev^2 / sum(pca$sdev^2)
-  variance = variance[1:10]
+  variance = variance[1:round(ncol(geneCounts) / 4, 1)]
   #PCA plots
   g = qplot(c(1:length(variance)), variance) + geom_line() + geom_point() +
         geom_hline(yintercept = 1/ncol(geneCounts), linetype = "dashed") +
@@ -93,9 +107,20 @@ analyzeSingleStudy = function(studyName, caseStatus_grep) {
         ggtitle(paste0(studyName, "\nNumber of SVs: ", n.sv))  + 
         ylim(0, 1)
   print(g)
-  print(autoplot(pca, data = phenotype, colour = 'phenotype_tumor'))
-
-  return(list(n.sv = n.sv,
+  if(logPlot) {
+    g = qplot(c(1:length(variance)), log10(variance)) + geom_line() + geom_point() +
+        geom_hline(yintercept = log10(1/ncol(geneCounts)), linetype = "dashed") +
+        xlab("Principal Component") + ylab("log10(Variance Explained)") + 
+        ggtitle(paste0(studyName, "\nNumber of SVs: ", n.sv)) 
+    print(g)
+  }
+  print(autoplot(pca, data = phenotype, colour = 'caseStatus'))
+  
+  #Estimate SVs:
+  nullMod = as.matrix(mod[, 1])
+  svobj = sva(geneCountsNormalized, mod, nullMod, n.sv = n.sv, vfilter = 3000)
+  
+  return(list(svobj = svobj,
               geneCounts = geneCounts, #return raw counts. 
               mod = mod))
 }
@@ -105,7 +130,7 @@ analyzeSingleStudy = function(studyName, caseStatus_grep) {
 ```{r echo=F, message=F}
 #Define analysis functions.
 
-analyzeMultipleStudies = function(mods, geneCounts, studyNames) {
+analyzeMultipleStudies = function(mods, geneCounts, studyNames, forcedNumSV, logPlot = F) {
   stopifnot(class(mods) == "list", class(geneCounts) == "list", class(studyNames) == "character")
   stopifnot(length(mods) > 1, length(geneCounts) > 1, length(studyNames) > 1)
   
@@ -121,16 +146,19 @@ analyzeMultipleStudies = function(mods, geneCounts, studyNames) {
   mods = do.call(rbind, mods)
   
   #normalize across studies
-  dds <- DESeqDataSetFromMatrix(countData = geneCounts, colData = mods, design = ~ phenotype_tumorTRUE)
+  mods2 = as.data.frame(mods)
+  mods2$`(Intercept)` = as.factor(mods2$`(Intercept)`)
+  mods2$caseStatusTRUE = as.factor(mods2$caseStatusTRUE)
+  dds <- DESeqDataSetFromMatrix(countData = geneCounts, colData = mods2, design = ~ caseStatusTRUE)
   dds <- estimateSizeFactors(dds)
   geneCountsNormalized <- counts(dds, normalized=TRUE)
   
   #SVA analysis
-  n.sv = num.sv(geneCountsNormalized, as.matrix(mods), method = "be", vfilter = 10000)
+  n.sv = num.sv(geneCountsNormalized, as.matrix(mods), method = "be", vfilter = 3000)
   #PCA analysis
   pca = prcomp(t(geneCountsNormalized))
   variance = pca$sdev^2 / sum(pca$sdev^2)
-  variance = variance[1:10]
+  variance = variance[1:round(ncol(geneCounts) / 4, 1)]
   #PCA plots
   g = qplot(c(1:length(variance)), variance) + geom_line() + geom_point() + 
         geom_hline(yintercept = 1/ncol(geneCounts), linetype = "dashed") +
@@ -139,32 +167,166 @@ analyzeMultipleStudies = function(mods, geneCounts, studyNames) {
                 subtitle = paste0("Number of SVs: ", n.sv)) + 
         ylim(0, 1)
   print(g)
+  if(logPlot) {
+    g = qplot(c(1:length(variance)), log10(variance)) + geom_line() + geom_point() +
+        geom_hline(yintercept = log10(1/ncol(geneCounts)), linetype = "dashed") +
+        xlab("Principal Component") + ylab("log10(Variance Explained)") + 
+        ggtitle(paste0(studyNames, collapse = " + "),
+                subtitle = paste0("Number of SVs: ", n.sv)) 
+    print(g)
+  }
 
-  mods = as.data.frame(mods)
-  mods$studyName = studyNamesLong
-  mods$phenotype_tumorTRUE = as.factor(mods$phenotype_tumorTRUE)
-  print(autoplot(pca, data = mods, colour = 'studyName', shape = 'phenotype_tumorTRUE'))
+  mods_plot = as.data.frame(mods)
+  mods_plot$studyName = studyNamesLong
+  mods_plot$caseStatusTRUE = as.factor(mods_plot$caseStatusTRUE)
+  print(autoplot(pca, data = mods_plot, colour = 'studyName', shape = 'caseStatusTRUE'))
+  
+  #Infer SV
+  nullMods = as.matrix(mods[, 1])
+  svobj = sva(geneCountsNormalized, mods, nullMods, n.sv = n.sv, vfilter = 3000)
+  forced_svobj = sva(geneCountsNormalized, mods, nullMods, n.sv = forcedNumSV, vfilter = 3000)
+  
+  return(list(svobj = svobj,
+              forced_svobj = forced_svobj))
 }
 ```
-
-## Analysis
 
 ```{r echo=F, message=F}
 #Run analysis here.
+#runAnalysis = function(study_info, logPlot = F) {
+study_info = prostateCancerStudies
+logPlot = T
 
 agg_mods = list()
 agg_geneCounts = list()
-
+singleStudy_SV = list()
+multiStudy_SV = list()
+multiStudy_forced_SV = list()
+expected_multiStudy_SV = 0
 
 for(i in 1:nrow(study_info)) {
+  cat(i, "\n")
   study_i = analyzeSingleStudy(study_info$studyName[i], 
-                               study_info$caseStatus_grep[i])
+                               study_info$caseStatus_grep[i],
+                               logPlot)
   
   agg_mods[[i]] = study_i$mod
   agg_geneCounts[[i]] = study_i$geneCounts
-  
-  if(i > 1)
-    analyzeMultipleStudies(agg_mods, agg_geneCounts, study_info$studyName[1:i])
+  singleStudy_SV[[i]] = study_i$svobj
+  if(i == 1)
+    expected_multiStudy_SV = study_i$svobj$n.sv
+  if(i > 1) {
+    expected_multiStudy_SV = expected_multiStudy_SV + study_i$svobj$n.sv + 1
+    multiStudy_i = analyzeMultipleStudies(agg_mods, 
+                                          agg_geneCounts, 
+                                          study_info$studyName[1:i],
+                                          expected_multiStudy_SV,
+                                          logPlot)
+    multiStudy_SV[[i]] = multiStudy_i$svobj
+    multiStudy_forced_SV[[i]] = multiStudy_i$forced_svobj
+  }
 }
 ```
+
+
+```{r echo=F, message=F}
+
+# Compare the SVs to make sure they are similar between the joint and separate 
+# analyses by plotting combinations of SVs against each other for the same samples
+
+#study 1 and 2 vs. merged study 1 and 2
+
+
+multiStudy2SV1 = multiStudy_SV[[2]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+multiStudy2ForcedSV1 = multiStudy_forced_SV[[2]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+multiStudy2SV2 = multiStudy_SV[[2]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):nrow(multiStudy_forced_SV[[2]]$sv) ,]
+multiStudy2ForcedSV2 = multiStudy_forced_SV[[2]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):nrow(multiStudy_forced_SV[[2]]$sv) ,]
+
+multiStudy3SV1 = multiStudy_SV[[3]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+multiStudy3ForcedSV1 = multiStudy_forced_SV[[3]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+multiStudy3SV2 = multiStudy_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+multiStudy3ForcedSV2 = multiStudy_forced_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+multiStudy3SV3 = multiStudy_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):nrow(multiStudy_forced_SV[[3]]$sv) ,]
+multiStudy3ForcedSV3 = multiStudy_forced_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):nrow(multiStudy_forced_SV[[3]]$sv) ,]
+
+multiStudy4SV1 = multiStudy_SV[[4]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+multiStudy4ForcedSV1 = multiStudy_forced_SV[[4]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+multiStudy4SV2 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+multiStudy4ForcedSV2 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+multiStudy4SV3 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)) ,]
+multiStudy4ForcedSV3 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)) ,]
+multiStudy4SV4 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv) + nrow(singleStudy_SV[[3]]$sv)+1):nrow(multiStudy_forced_SV[[4]]$sv) ,]
+multiStudy4ForcedSV4 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)+1):nrow(multiStudy_forced_SV[[4]]$sv) ,]
+
+
+myPairs = function(df1, df2, top = "", bottom = "", left = "") {
+  stopifnot(nrow(df1) == nrow(df2))
+  plots = list()
+  k = 1
+  for(i in 1:ncol(df1)) {i
+    for (j in 1:ncol(df2)) {
+      correlation = round(cor(df1[, i], df2[, j]), 2)
+      df = data.frame(x = df1[, i], y = df2[, j])
+      plots[[k]] = ggplot(df, aes(x, y)) + geom_point(size = .8) + ggtitle(correlation) +
+        theme(axis.text.x=element_blank(),
+              axis.text.y=element_blank(),
+              axis.ticks=element_blank(),
+              legend.position="none",
+              axis.title.x=element_blank(),
+              axis.title.y=element_blank())
+      k = k + 1
+    }
+  }
+  print(marrangeGrob(plots, nrow = ncol(df1), ncol = ncol(df2), top = top, bottom = bottom, left = left))
+}
+
+```
+
+```{r echo=F, fig.width=10, fig.height=8}
+myPairs(singleStudy_SV[[1]]$sv, multiStudy2SV1, top = "Study 1 SVs vs. Study 1+2 SVs", left = "Study 1", bottom = "Study 1 + 2")
+myPairs(singleStudy_SV[[1]]$sv, multiStudy2ForcedSV1, "Study 1 SVs vs. Study 1+2 forced SVs", left = "Study 1", bottom = "Study 1 + 2")
+
+myPairs(singleStudy_SV[[2]]$sv, multiStudy2SV2, top = "Study 2 SVs vs. Study 1+2 SVs", left = "Study 2", bottom = "Study 1 + 2")
+myPairs(singleStudy_SV[[2]]$sv, multiStudy2ForcedSV2, top = "Study 2 SVs vs. Study 1+2 forced SVs", left = "Study 2", bottom = "Study 1 + 2")
+
+
+myPairs(singleStudy_SV[[1]]$sv, data.frame(multiStudy3SV1), top = "Study 1 SVs vs. Study 1+2+3 SVs", left = "Study 1", bottom = "Study 1 + 2 + 3")
+myPairs(singleStudy_SV[[1]]$sv, multiStudy3ForcedSV1, "Study 1 SVs vs. Study 1+2+3 forced SVs", left = "Study 1", bottom = "Study 1 + 2 + 3")
+
+myPairs(singleStudy_SV[[2]]$sv, data.frame(multiStudy3SV2), top = "Study 2 SVs vs. Study 1+2+3 SVs", left = "Study 2", bottom = "Study 1 + 2 + 3")
+myPairs(singleStudy_SV[[2]]$sv, multiStudy3ForcedSV2, top = "Study 2 SVs vs. Study 1+2+3 forced SVs", left = "Study 2", bottom = "Study 1 + 2 + 3")
+
+myPairs(singleStudy_SV[[3]]$sv, data.frame(multiStudy3SV3), top = "Study 3 SVs vs. Study 1+2+3 SVs", left = "Study 3", bottom = "Study 1 + 2 + 3")
+myPairs(singleStudy_SV[[3]]$sv, multiStudy3ForcedSV3, top = "Study 3 SVs vs. Study 1+2+3 forced SVs", left = "Study 3", bottom = "Study 1 + 2 + 3")
+
+
+
+myPairs(singleStudy_SV[[1]]$sv, multiStudy4SV1, top = "Study 1 SVs vs. Study 1+2+3+4 SVs", left = "Study 1", bottom = "Study 1 + 2 + 3 + 4")
+myPairs(singleStudy_SV[[1]]$sv, multiStudy4ForcedSV1, "Study 1 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 1", bottom = "Study 1 + 2 + 3 + 4")
+
+myPairs(singleStudy_SV[[2]]$sv, multiStudy4SV2, top = "Study 2 SVs vs. Study 1+2+3+4 SVs", left = "Study 2", bottom = "Study 1 + 2 + 3 + 4")
+myPairs(singleStudy_SV[[2]]$sv, multiStudy4ForcedSV2, top = "Study 2 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 2", bottom = "Study 1 + 2 + 3 + 4")
+
+myPairs(singleStudy_SV[[3]]$sv, multiStudy4SV3, top = "Study 3 SVs vs. Study 1+2+3+4 SVs", left = "Study 3", bottom = "Study 1 + 2 + 3 + 4")
+myPairs(singleStudy_SV[[3]]$sv, multiStudy4ForcedSV3, top = "Study 3 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 3", bottom = "Study 1 + 2 + 3 + 4")
+
+myPairs(singleStudy_SV[[4]]$sv, multiStudy4SV4, top = "Study 4 SVs vs. Study 1+2+3+4 SVs", left = "Study 4", bottom = "Study 1 + 2 + 3 + 4")
+myPairs(singleStudy_SV[[4]]$sv, multiStudy4ForcedSV4, top = "Study 4 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 4", bottom = "Study 1 + 2 + 3 + 4")
+
+#} 
+```
+
+<!-- ## Analysis: Prostate Studies -->
+
+<!-- ```{r echo=F} -->
+<!-- runAnalysis(prostateCancerStudies) -->
+<!-- ``` -->
+
+<!-- ## Analysis: TB Studies -->
+
+<!-- ```{r echo=F} -->
+
+<!-- runAnalysis(TB_Studies, logPlot = T) -->
+
+<!-- ``` -->
 
