@@ -15,6 +15,7 @@ library(recount3)
 library(sva)
 library(DESeq2)
 library(gridExtra)
+library(fastDummies)
 library(ggfortify)
 theme_set(theme_bw())
 ```
@@ -91,8 +92,8 @@ analyzeSingleStudy = function(studyName, caseStatus_grep, logPlot = F) {
   dds <- estimateSizeFactors(dds)
   geneCountsNormalized <- counts(dds, normalized = TRUE)
   #Summary statistics of sizeFactors. 
-  print("SizeFactor distribution:")
-  print(summary(sizeFactors(dds)))
+  print(qplot(sizeFactors(dds), main = "Sizefactor estimates per sample"))
+  print(qplot(colSums(geneCountsNormalized), main = paste0("Normalized total counts per sample for ", studyName)))
   
   #Estimate number of SVs
   n.sv = num.sv(geneCountsNormalized, mod, method = "be", vfilter = 3000)
@@ -130,7 +131,18 @@ analyzeSingleStudy = function(studyName, caseStatus_grep, logPlot = F) {
 ```{r echo=F, message=F}
 #Define analysis functions.
 
-analyzeMultipleStudies = function(mods, geneCounts, studyNames, forcedNumSV, logPlot = F) {
+sum_of_span_residue = function(X, Y) {
+  X = as.matrix(X)
+  Y = as.matrix(Y)
+  stopifnot(nrow(X) == nrow(Y))
+  mod1 = lm.fit(X, Y)
+  mod1_res = norm(mod1$fitted.values - Y, type = "F") / (nrow(Y) * ncol(Y))
+  mod2 = lm.fit(Y, X)
+  mod2_res = norm(mod2$fitted.values - X, type = "F") / (nrow(X) * ncol(X))
+  return(mod1_res + mod2_res)
+}
+
+analyzeMultipleStudies = function(mods, geneCounts, singleStudy_SV, studyNames, forcedNumSV, logPlot = F) {
   stopifnot(class(mods) == "list", class(geneCounts) == "list", class(studyNames) == "character")
   stopifnot(length(mods) > 1, length(geneCounts) > 1, length(studyNames) > 1)
   
@@ -141,14 +153,21 @@ analyzeMultipleStudies = function(mods, geneCounts, studyNames, forcedNumSV, log
                        rep(studyNames[j], ncol(geneCounts[[j]])))
   }
   
-  #Collapse list to dataframe
+  #Get sample size for each study
+  singleStudy_size = unlist(lapply(singleStudy_SV, function(x) nrow(x$sv)))
+  #Collapse geneCounts to dataframe
   geneCounts = do.call(cbind, geneCounts)
+  #Collapse mods to dataframe, create dummy vars
   mods = do.call(rbind, mods)
+  mods = dummy_cols(mods, select_columns = "i", remove_selected_columns = T, 
+                    remove_first_dummy = T)
+  mods = as.matrix(mods)
   
   #normalize across studies
   mods2 = as.data.frame(mods)
-  mods2$`(Intercept)` = as.factor(mods2$`(Intercept)`)
-  mods2$caseStatusTRUE = as.factor(mods2$caseStatusTRUE)
+  for(col in 1:ncol(mods2)) {
+    mods2[, col] = as.factor(mods2[, col])
+  }
   dds <- DESeqDataSetFromMatrix(countData = geneCounts, colData = mods2, design = ~ caseStatusTRUE)
   dds <- estimateSizeFactors(dds)
   geneCountsNormalized <- counts(dds, normalized=TRUE)
@@ -182,12 +201,37 @@ analyzeMultipleStudies = function(mods, geneCounts, studyNames, forcedNumSV, log
   print(autoplot(pca, data = mods_plot, colour = 'studyName', shape = 'caseStatusTRUE'))
   
   #Infer SV
-  nullMods = as.matrix(mods[, 1])
+  nullMods = mods[, -2]
   svobj = sva(geneCountsNormalized, mods, nullMods, n.sv = n.sv, vfilter = 3000)
-  forced_svobj = sva(geneCountsNormalized, mods, nullMods, n.sv = forcedNumSV, vfilter = 3000)
+  #Forced SVs
+  span_residue = expand.grid(n.sv = 1:(forcedNumSV + 6),
+                             study = 1:length(singleStudy_SV))
+  span_residue$residue = NA
+
+  for(n.sv in unique(span_residue$n.sv)) {
+    forced_svobj = tryCatch({
+       sva(geneCountsNormalized, mods, nullMods, n.sv = n.sv, vfilter = 3000)
+    }, error = function(e) {
+        joint_svobj_forced = NA
+    }, finally = {})
+    for(study in unique(span_residue$study)) {
+      if(study == 1) {
+        idx_start = 1
+        idx_end = singleStudy_size[1]
+      }else {
+        idx_start = singleStudy_size[study - 1] + 1
+        idx_end = singleStudy_size[study - 1] + singleStudy_size[study]
+      }
+      if(!is.na(forced_svobj)) {
+        residue = sum_of_span_residue(singleStudy_SV[[study]]$sv,
+                                      forced_svobj$sv[idx_start:idx_end ,])
+        span_residue$residue[span_residue$n.sv == n.sv & span_residue$study == study] = residue
+      }
+    }
+  }
   
   return(list(svobj = svobj,
-              forced_svobj = forced_svobj))
+              span_residue = span_residue))
 }
 ```
 
@@ -195,14 +239,16 @@ analyzeMultipleStudies = function(mods, geneCounts, studyNames, forcedNumSV, log
 #Run analysis here.
 #runAnalysis = function(study_info, logPlot = F) {
 study_info = prostateCancerStudies
-logPlot = T
+logPlot = F
 
 agg_mods = list()
 agg_geneCounts = list()
 singleStudy_SV = list()
 multiStudy_SV = list()
-multiStudy_forced_SV = list()
+
+multiStudy_span_residue = list()
 expected_multiStudy_SV = 0
+expected_multiStudy_SV_all = c()
 
 for(i in 1:nrow(study_info)) {
   cat(i, "\n")
@@ -210,56 +256,43 @@ for(i in 1:nrow(study_info)) {
                                study_info$caseStatus_grep[i],
                                logPlot)
   
-  agg_mods[[i]] = study_i$mod
+  agg_mods[[i]] = as.matrix(cbind(study_i$mod, i))
   agg_geneCounts[[i]] = study_i$geneCounts
   singleStudy_SV[[i]] = study_i$svobj
-  if(i == 1)
-    expected_multiStudy_SV = study_i$svobj$n.sv
+  expected_multiStudy_SV = expected_multiStudy_SV + study_i$svobj$n.sv 
   if(i > 1) {
-    expected_multiStudy_SV = expected_multiStudy_SV + study_i$svobj$n.sv + 1
     multiStudy_i = analyzeMultipleStudies(agg_mods, 
                                           agg_geneCounts, 
+                                          singleStudy_SV,
                                           study_info$studyName[1:i],
                                           expected_multiStudy_SV,
                                           logPlot)
+    expected_multiStudy_SV_all[i] = expected_multiStudy_SV
     multiStudy_SV[[i]] = multiStudy_i$svobj
-    multiStudy_forced_SV[[i]] = multiStudy_i$forced_svobj
+    multiStudy_span_residue[[i]] = multiStudy_i$span_residue
   }
+  
 }
 ```
 
 
 ```{r echo=F, message=F}
+ggplot(multiStudy_span_residue[[2]], aes(n.sv, residue)) + geom_point() + geom_line() + facet_wrap(~study) + 
+  geom_vline(xintercept = multiStudy_SV[[2]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[2], color = "blue")
 
-# Compare the SVs to make sure they are similar between the joint and separate 
-# analyses by plotting combinations of SVs against each other for the same samples
+ggplot(multiStudy_span_residue[[3]], aes(n.sv, residue)) + geom_point() + geom_line() + facet_wrap(~study) + 
+  geom_vline(xintercept = multiStudy_SV[[3]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[3], color = "blue")
 
-#study 1 and 2 vs. merged study 1 and 2
-
-
-multiStudy2SV1 = multiStudy_SV[[2]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
-multiStudy2ForcedSV1 = multiStudy_forced_SV[[2]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
-multiStudy2SV2 = multiStudy_SV[[2]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):nrow(multiStudy_forced_SV[[2]]$sv) ,]
-multiStudy2ForcedSV2 = multiStudy_forced_SV[[2]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):nrow(multiStudy_forced_SV[[2]]$sv) ,]
-
-multiStudy3SV1 = multiStudy_SV[[3]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
-multiStudy3ForcedSV1 = multiStudy_forced_SV[[3]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
-multiStudy3SV2 = multiStudy_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
-multiStudy3ForcedSV2 = multiStudy_forced_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
-multiStudy3SV3 = multiStudy_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):nrow(multiStudy_forced_SV[[3]]$sv) ,]
-multiStudy3ForcedSV3 = multiStudy_forced_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):nrow(multiStudy_forced_SV[[3]]$sv) ,]
-
-multiStudy4SV1 = multiStudy_SV[[4]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
-multiStudy4ForcedSV1 = multiStudy_forced_SV[[4]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
-multiStudy4SV2 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
-multiStudy4ForcedSV2 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
-multiStudy4SV3 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)) ,]
-multiStudy4ForcedSV3 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)) ,]
-multiStudy4SV4 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv) + nrow(singleStudy_SV[[3]]$sv)+1):nrow(multiStudy_forced_SV[[4]]$sv) ,]
-multiStudy4ForcedSV4 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)+1):nrow(multiStudy_forced_SV[[4]]$sv) ,]
+ggplot(multiStudy_span_residue[[4]], aes(n.sv, residue)) + geom_point() + geom_line() + facet_wrap(~study) + 
+  geom_vline(xintercept = multiStudy_SV[[4]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[4], color = "blue")
+```
 
 
-myPairs = function(df1, df2, top = "", bottom = "", left = "") {
+```{r echo=F, message=F}
+
+
+
+myPairs = function(df1, df2, bottom = "", left = "") {
   stopifnot(nrow(df1) == nrow(df2))
   plots = list()
   k = 1
@@ -277,44 +310,63 @@ myPairs = function(df1, df2, top = "", bottom = "", left = "") {
       k = k + 1
     }
   }
+  top = paste0("SV Spanning Score: ", round(sum_of_span_residue(df1, df2), 4))
   print(marrangeGrob(plots, nrow = ncol(df1), ncol = ncol(df2), top = top, bottom = bottom, left = left))
 }
+
 
 ```
 
 ```{r echo=F, fig.width=10, fig.height=8}
-myPairs(singleStudy_SV[[1]]$sv, multiStudy2SV1, top = "Study 1 SVs vs. Study 1+2 SVs", left = "Study 1", bottom = "Study 1 + 2")
-myPairs(singleStudy_SV[[1]]$sv, multiStudy2ForcedSV1, "Study 1 SVs vs. Study 1+2 forced SVs", left = "Study 1", bottom = "Study 1 + 2")
 
-myPairs(singleStudy_SV[[2]]$sv, multiStudy2SV2, top = "Study 2 SVs vs. Study 1+2 SVs", left = "Study 2", bottom = "Study 1 + 2")
-myPairs(singleStudy_SV[[2]]$sv, multiStudy2ForcedSV2, top = "Study 2 SVs vs. Study 1+2 forced SVs", left = "Study 2", bottom = "Study 1 + 2")
+# Compare the SVs to make sure they are similar between the joint and separate 
+# analyses by plotting combinations of SVs against each other for the same samples
+# 
+# multiStudy2SV1 = multiStudy_SV[[2]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+# multiStudy2ForcedSV1 = multiStudy_forced_SV[[2]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+# multiStudy2SV2 = multiStudy_SV[[2]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):nrow(multiStudy_forced_SV[[2]]$sv) ,]
+# multiStudy2ForcedSV2 = multiStudy_forced_SV[[2]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):nrow(multiStudy_forced_SV[[2]]$sv) ,]
+# 
+# multiStudy3SV1 = multiStudy_SV[[3]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+# multiStudy3ForcedSV1 = multiStudy_forced_SV[[3]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+# multiStudy3SV2 = multiStudy_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+# multiStudy3ForcedSV2 = multiStudy_forced_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+# multiStudy3SV3 = multiStudy_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):nrow(multiStudy_forced_SV[[3]]$sv) ,]
+# multiStudy3ForcedSV3 = multiStudy_forced_SV[[3]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):nrow(multiStudy_forced_SV[[3]]$sv) ,]
+# 
+# multiStudy4SV1 = multiStudy_SV[[4]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+# multiStudy4ForcedSV1 = multiStudy_forced_SV[[4]]$sv[1:nrow(singleStudy_SV[[1]]$sv) ,]
+# multiStudy4SV2 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+# multiStudy4ForcedSV2 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)) ,]
+# multiStudy4SV3 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)) ,]
+# multiStudy4ForcedSV3 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+1):(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)) ,]
+# multiStudy4SV4 = multiStudy_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv) + nrow(singleStudy_SV[[3]]$sv)+1):nrow(multiStudy_forced_SV[[4]]$sv) ,]
+# multiStudy4ForcedSV4 = multiStudy_forced_SV[[4]]$sv[(nrow(singleStudy_SV[[1]]$sv)+nrow(singleStudy_SV[[2]]$sv)+nrow(singleStudy_SV[[3]]$sv)+1):nrow(multiStudy_forced_SV[[4]]$sv) ,]
+# 
+# myPairs(singleStudy_SV[[1]]$sv, multiStudy2SV1, left = "Study 1", bottom = "Study 1 + 2")
+# myPairs(singleStudy_SV[[2]]$sv, multiStudy2SV2, left = "Study 2", bottom = "Study 1 + 2")
+# myPairs(singleStudy_SV[[1]]$sv, multiStudy2ForcedSV1, left = "Study 1", bottom = "Study 1 + 2 forced")
+# myPairs(singleStudy_SV[[2]]$sv, multiStudy2ForcedSV2, left = "Study 2", bottom = "Study 1 + 2 forced")
+# 
+# myPairs(singleStudy_SV[[1]]$sv, data.frame(multiStudy3SV1), left = "Study 1", bottom = "Study 1 + 2 + 3")
+# myPairs(singleStudy_SV[[2]]$sv, data.frame(multiStudy3SV2), left = "Study 2", bottom = "Study 1 + 2 + 3")
+# myPairs(singleStudy_SV[[3]]$sv, data.frame(multiStudy3SV3), left = "Study 3", bottom = "Study 1 + 2 + 3")
+# myPairs(singleStudy_SV[[1]]$sv, multiStudy3ForcedSV1,  left = "Study 1", bottom = "Study 1 + 2 + 3 forced")
+# myPairs(singleStudy_SV[[2]]$sv, multiStudy3ForcedSV2, left = "Study 2", bottom = "Study 1 + 2 + 3 forced")
+# myPairs(singleStudy_SV[[3]]$sv, multiStudy3ForcedSV3, left = "Study 3", bottom = "Study 1 + 2 + 3 forced")
+# 
+# myPairs(singleStudy_SV[[1]]$sv, multiStudy4SV1, left = "Study 1", bottom = "Study 1 + 2 + 3 + 4")
+# myPairs(singleStudy_SV[[2]]$sv, multiStudy4SV2, left = "Study 2", bottom = "Study 1 + 2 + 3 + 4")
+# myPairs(singleStudy_SV[[3]]$sv, multiStudy4SV3, left = "Study 3", bottom = "Study 1 + 2 + 3 + 4")
+# myPairs(singleStudy_SV[[4]]$sv, multiStudy4SV4, left = "Study 4", bottom = "Study 1 + 2 + 3 + 4")
+# myPairs(singleStudy_SV[[1]]$sv, multiStudy4ForcedSV1, left = "Study 1", bottom = "Study 1 + 2 + 3 + 4 forced")
+# myPairs(singleStudy_SV[[2]]$sv, multiStudy4ForcedSV2, left = "Study 2", bottom = "Study 1 + 2 + 3 + 4 forced")
+# myPairs(singleStudy_SV[[3]]$sv, multiStudy4ForcedSV3, left = "Study 3", bottom = "Study 1 + 2 + 3 + 4 forced")
+# myPairs(singleStudy_SV[[4]]$sv, multiStudy4ForcedSV4, left = "Study 4", bottom = "Study 1 + 2 + 3 + 4 forced")
 
-
-myPairs(singleStudy_SV[[1]]$sv, data.frame(multiStudy3SV1), top = "Study 1 SVs vs. Study 1+2+3 SVs", left = "Study 1", bottom = "Study 1 + 2 + 3")
-myPairs(singleStudy_SV[[1]]$sv, multiStudy3ForcedSV1, "Study 1 SVs vs. Study 1+2+3 forced SVs", left = "Study 1", bottom = "Study 1 + 2 + 3")
-
-myPairs(singleStudy_SV[[2]]$sv, data.frame(multiStudy3SV2), top = "Study 2 SVs vs. Study 1+2+3 SVs", left = "Study 2", bottom = "Study 1 + 2 + 3")
-myPairs(singleStudy_SV[[2]]$sv, multiStudy3ForcedSV2, top = "Study 2 SVs vs. Study 1+2+3 forced SVs", left = "Study 2", bottom = "Study 1 + 2 + 3")
-
-myPairs(singleStudy_SV[[3]]$sv, data.frame(multiStudy3SV3), top = "Study 3 SVs vs. Study 1+2+3 SVs", left = "Study 3", bottom = "Study 1 + 2 + 3")
-myPairs(singleStudy_SV[[3]]$sv, multiStudy3ForcedSV3, top = "Study 3 SVs vs. Study 1+2+3 forced SVs", left = "Study 3", bottom = "Study 1 + 2 + 3")
-
-
-
-myPairs(singleStudy_SV[[1]]$sv, multiStudy4SV1, top = "Study 1 SVs vs. Study 1+2+3+4 SVs", left = "Study 1", bottom = "Study 1 + 2 + 3 + 4")
-myPairs(singleStudy_SV[[1]]$sv, multiStudy4ForcedSV1, "Study 1 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 1", bottom = "Study 1 + 2 + 3 + 4")
-
-myPairs(singleStudy_SV[[2]]$sv, multiStudy4SV2, top = "Study 2 SVs vs. Study 1+2+3+4 SVs", left = "Study 2", bottom = "Study 1 + 2 + 3 + 4")
-myPairs(singleStudy_SV[[2]]$sv, multiStudy4ForcedSV2, top = "Study 2 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 2", bottom = "Study 1 + 2 + 3 + 4")
-
-myPairs(singleStudy_SV[[3]]$sv, multiStudy4SV3, top = "Study 3 SVs vs. Study 1+2+3+4 SVs", left = "Study 3", bottom = "Study 1 + 2 + 3 + 4")
-myPairs(singleStudy_SV[[3]]$sv, multiStudy4ForcedSV3, top = "Study 3 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 3", bottom = "Study 1 + 2 + 3 + 4")
-
-myPairs(singleStudy_SV[[4]]$sv, multiStudy4SV4, top = "Study 4 SVs vs. Study 1+2+3+4 SVs", left = "Study 4", bottom = "Study 1 + 2 + 3 + 4")
-myPairs(singleStudy_SV[[4]]$sv, multiStudy4ForcedSV4, top = "Study 4 SVs vs. Study 1+2+3+4 forced SVs", left = "Study 4", bottom = "Study 1 + 2 + 3 + 4")
-
-#} 
 ```
+
+
 
 <!-- ## Analysis: Prostate Studies -->
 
