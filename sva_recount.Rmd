@@ -14,6 +14,7 @@ library(tidyverse)
 library(recount3)
 library(sva)
 library(DESeq2)
+library(grid)
 library(gridExtra)
 library(fastDummies)
 library(ggfortify)
@@ -135,6 +136,9 @@ sum_of_span_residue = function(X, Y) {
   X = as.matrix(X)
   Y = as.matrix(Y)
   stopifnot(nrow(X) == nrow(Y))
+  #normalize X and Y by columns
+  X = scale(X)
+  Y = scale(Y)
   mod1 = lm.fit(X, Y)
   mod1_res = norm(mod1$fitted.values - Y, type = "F") / (nrow(Y) * ncol(Y))
   mod2 = lm.fit(Y, X)
@@ -276,22 +280,39 @@ for(i in 1:nrow(study_info)) {
 ```
 
 
-```{r echo=F, message=F}
-ggplot(multiStudy_span_residue[[2]], aes(n.sv, residue)) + geom_point() + geom_line() + facet_wrap(~study) + 
-  geom_vline(xintercept = multiStudy_SV[[2]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[2], color = "blue")
+```{r echo=F, message=F, fig.width=12, fig.height=10}
+residue_plot_max = .2
+plots = list()
+blank <- grid.rect(gp=gpar(col="white"))
 
-ggplot(multiStudy_span_residue[[3]], aes(n.sv, residue)) + geom_point() + geom_line() + facet_wrap(~study) + 
-  geom_vline(xintercept = multiStudy_SV[[3]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[3], color = "blue")
+plots[[1]] = ggplot(multiStudy_span_residue[[2]] %>% filter(study == 1), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[2]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[2], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
 
-ggplot(multiStudy_span_residue[[4]], aes(n.sv, residue)) + geom_point() + geom_line() + facet_wrap(~study) + 
-  geom_vline(xintercept = multiStudy_SV[[4]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[4], color = "blue")
+plots[[2]] = ggplot(multiStudy_span_residue[[2]] %>% filter(study == 2), aes(n.sv, residue)) + geom_point() + geom_line() +  geom_vline(xintercept = multiStudy_SV[[2]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[2], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+plots[[3]] = blank
+plots[[4]] = blank
+
+plots[[5]] = ggplot(multiStudy_span_residue[[3]] %>% filter(study == 1), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[3]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[3], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+plots[[6]] = ggplot(multiStudy_span_residue[[3]] %>% filter(study == 2), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[3]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[3], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+plots[[7]] = ggplot(multiStudy_span_residue[[3]] %>% filter(study == 3), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[3]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[3], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+plots[[8]] = blank
+
+plots[[9]] = ggplot(multiStudy_span_residue[[4]] %>% filter(study == 1), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[4]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[4], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+plots[[10]] = ggplot(multiStudy_span_residue[[4]] %>% filter(study == 2), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[4]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[4], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+plots[[11]] = ggplot(multiStudy_span_residue[[4]] %>% filter(study == 3), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[4]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[4], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+plots[[12]] = ggplot(multiStudy_span_residue[[4]] %>% filter(study == 4), aes(n.sv, residue)) + geom_point() + geom_line() + geom_vline(xintercept = multiStudy_SV[[4]]$n.sv, color = "red") + geom_vline(xintercept = expected_multiStudy_SV_all[4], color = "blue") + scale_y_continuous(limits = c(0, residue_plot_max))
+
+grid.arrange(grobs = plots, nrow = 3)
 ```
 
 
-```{r echo=F, message=F}
-
-
-
+```{r echo=F, message=F, fig.width=12, fig.height=9}
 myPairs = function(df1, df2, bottom = "", left = "") {
   stopifnot(nrow(df1) == nrow(df2))
   plots = list()

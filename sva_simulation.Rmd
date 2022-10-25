@@ -2,7 +2,9 @@
 title: "SVA Simulation"
 author: "Christopher Lo"
 date: "9/6/2022"
-output: pdf_document
+output:
+  pdf_document: default
+  word_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -36,7 +38,7 @@ Case effect for DE genes $m=1:300$: $b_{m, 2} \sim N(3, 1)$
 
 Case effect for Non-DE genes $m=301:1000$: $b_{m, 2} \sim N(0, 2)$
 
-Latent design matrix (kernel) $G$: $G_{r, n} \sim Bernoulli(.2), n=1:10$. $G_{r, n} \sim Bernoulli(.8), n=11:20$, where $r = 1, 2$. (This ensures correlation between the two design matrices. The stronger the correlation, the less signal we will see, because the latent effects lead to FPs and FNs if the design matricies are similar.)
+Latent design matrix (kernel) $G$: $G_{r, n} \sim Bernoulli(.4), n=1:10$. $G_{r, n} \sim Bernoulli(.6), n=11:20$, where $r = 1, 2$. (This ensures correlation between the two design matrices. The stronger the correlation, the less signal we will see, because the latent effects lead to FPs and FNs if the design matricies are similar.)
 
 Latent effect 1: $\Gamma_{m, 1} \sim N(0, 1), m=1:300$,  $\Gamma_{m, 1} \sim N(1, 2), m=301:1000$. (Positive signal overlaps with Non-DE genes, will lead to FPs if not corrected)
 
@@ -75,14 +77,62 @@ gamma2 = mapply(mu = c(rep(-1.5, 300), rep(0, m - 300)),
                 sigma = c(rep(2, 300), rep(1, m - 300)),
                 function(mu, sigma) rnorm(1, mean = mu, sd = sigma))
 Gamma = cbind(gamma1, gamma2)
-G = mapply(p = c(rep(.2, 10), rep(.8, 10)), #no need for intercept for kernel G.
-           function(p) rbernoulli(2, p))
-# G = mapply(mu = c(rep(0, 10), rep(.3, 10)), #no need for intercept for kernel G. 
+G = mapply(p = c(rep(.4, 10), rep(.6, 10)), #no need for intercept for kernel G.
+           function(p) as.numeric(rbernoulli(2, p)))
+# G = mapply(mu = c(rep(0, 10), rep(.3, 10)), #no need for intercept for kernel G.
 #            sigma = c(rep(1, 20)),
 #            function(mu, sigma) rnorm(2, mean = mu, sd = sigma))
 
 X = B %*% S + Gamma %*% G + U
 ```
+
+```{r echo=F}
+#useful functions
+sum_of_span_residue = function(X, Y) {
+  X = as.matrix(X)
+  Y = as.matrix(Y)
+  stopifnot(nrow(X) == nrow(Y))
+  #Z-score X and Y by columns
+  X = scale(X)
+  Y = scale(Y)
+  mod1 = lm.fit(X, Y)
+  mod1_res = norm(mod1$fitted.values - Y, type = "F") / (nrow(Y) * ncol(Y))
+  mod2 = lm.fit(Y, X)
+  mod2_res = norm(mod2$fitted.values - X, type = "F") / (nrow(X) * ncol(X))
+  return(mod1_res + mod2_res)
+}
+
+myPairs = function(df1, df2, bottom = "", left = "") {
+  stopifnot(nrow(df1) == nrow(df2))
+  plots = list()
+  k = 1
+  for(i in 1:ncol(df1)) {i
+    for (j in 1:ncol(df2)) {
+      correlation = round(cor(df1[, i], df2[, j]), 2)
+      df = data.frame(x = df1[, i], y = df2[, j])
+      plots[[k]] = ggplot(df, aes(x, y)) + geom_point(size = .8) + ggtitle(correlation) +
+        theme(axis.text.x=element_blank(),
+              axis.text.y=element_blank(),
+              axis.ticks=element_blank(),
+              legend.position="none",
+              axis.title.x=element_blank(),
+              axis.title.y=element_blank())
+      k = k + 1
+    }
+  }
+  top = paste0("SV Spanning Score: ", round(sum_of_span_residue(df1, df2), 4))
+  print(marrangeGrob(plots, nrow = ncol(df1), ncol = ncol(df2), top = top, bottom = bottom, left = left))
+}
+```
+
+-   What is the correlation between true latent variables and primary variables?
+
+Primary case/control vs. latent 1: `r cor(S[2 ,], G[1 ,])`
+
+Primary case/control vs. latent 2: `r cor(S[2 ,], G[2 ,])`
+
+Primary design matrix vs. latent design matrix span residual (not sure): `r sum_of_span_residue(t(S)[, 2], t(G))`
+
 
 # Estimate the number of SVs:
 
@@ -114,12 +164,21 @@ nullMod = t(S)[, 1]
 svobj = sva(X, t(S), nullMod, n.sv = n.sv)
 
 #visually look at predicted SVs. 
-qplot(as.numeric(G[1 ,]), svobj$sv[, 1], xlab = "True latent variable 1", ylab = "Est. SV1")
-qplot(as.numeric(G[2 ,]), svobj$sv[, 2], xlab = "True latent variable 2", ylab = "Est. SV2")
+qplot(G[1 ,], svobj$sv[, 1], xlab = "True latent variable 1", ylab = "Est. SV1")
+qplot(G[2 ,], svobj$sv[, 2], xlab = "True latent variable 2", ylab = "Est. SV2")
+```
+
+Inferred SV vs. latent design matrix span residual (not sure): `r sum_of_span_residue(t(S)[, 2], svobj$sv)`.
+
+Latent 1 vs. SV 1: `r cor(G[1 ,], svobj$sv[, 1])`
+
+Latent 2 vs. SV 2: `r cor(G[2 ,], svobj$sv[, 2])`
+
+
+```{r echo=T, warning=F, message=F}
 
 nullmodsv = cbind(nullMod, svobj$sv)
 modsv = cbind(t(S), svobj$sv)
-#run full regression.
 fitsv = lm.fit(modsv, t(X))
 
 #visually look at predicted coefficients
@@ -143,14 +202,12 @@ ggplot(plot_df, aes(gamma2, gamma2_hat)) + geom_point() + facet_wrap(~gamma2_lab
 
 Not sure what's going on here yet regarding p-values and ranking.
 
--   Why does `f.pvalue()` function look very different than `anova()` function?
-
 -   Why are we getting no p values < .05?
 
 ```{r echo=F}
 #just compute p-value of b_12 = 0 using F statistics. 
-pValuesSv = f.pvalue(X, modsv, nullmodsv)
-pValues = f.pvalue(X, t(S), as.matrix(nullMod))
+pValuesSV = f.pvalue(X, modsv, nullmodsv)
+pValuesNoSV = f.pvalue(X, t(S), as.matrix(nullMod))
 
 #double check with existing function:
 pValuesSV2 = rep(NA, 1000)
@@ -165,25 +222,17 @@ for(i in 1:1000) {
 }
 
 
-plot(1:length(pValues[301:1000])/(length(pValues[301:1000])+1),sort(pValues[301:1000]), main = "No SV control, No signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
+plot(1:length(pValuesNoSV[301:1000])/(length(pValuesNoSV[301:1000])+1),sort(pValuesNoSV[301:1000]), main = "No SV control, No signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
 abline(a = 0, b = 1)
 
-plot(1:length(pValuesSv[301:1000])/(length(pValuesSv[301:1000])+1),sort(pValuesSv[301:1000]), main = "SV controlled, No signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
+plot(1:length(pValuesSV[301:1000])/(length(pValuesSV[301:1000])+1),sort(pValuesSV[301:1000]), main = "SV controlled, No signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
 abline(a = 0, b = 1)
 
-plot(1:length(pValues[1:300])/(length(pValues[1:300])+1),sort(pValues[1:300]), main = "No SV control, Signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
+plot(1:length(pValuesNoSV[1:300])/(length(pValuesNoSV[1:300])+1),sort(pValuesNoSV[1:300]), main = "No SV control, Signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
 abline(a = 0, b = 1)
 
-plot(1:length(pValuesSv[1:300])/(length(pValuesSv[1:300])+1),sort(pValuesSv[1:300]), main = "SV controlled, Signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
+plot(1:length(pValuesSV[1:300])/(length(pValuesSV[1:300])+1),sort(pValuesSV[1:300]), main = "SV controlled, Signal", xlab = "P-values", ylab = "Uniform(0, 1)", xlim = c(0, 1), ylim = c(0, 1))
 abline(a = 0, b = 1)
-
-
-
-# 
-# print(ks.test(qValuesSV2[301:1000],"punif",0,1))
-# 
-# print(table(qValuesSV2[301:1000] < .05))
-# print(table(qValuesSV2[1:300] < .05))
 
 
 FStat_order = order(fstat, decreasing = T)
@@ -224,41 +273,7 @@ etc.
 
 We keep $cor(G_{ir}, S_{i2})$ at the same strength, and vary the SV effect $\Gamma_{m, 1}$, $\Gamma_{m, 2}$, and the study effect, $\alpha$
 
-```{r echo=F}
 
-sum_of_span_residue = function(X, Y) {
-  X = as.matrix(X)
-  Y = as.matrix(Y)
-  stopifnot(nrow(X) == nrow(Y))
-  mod1 = lm.fit(X, Y)
-  mod1_res = norm(mod1$fitted.values - Y, type = "F") / (nrow(Y) * ncol(Y))
-  mod2 = lm.fit(Y, X)
-  mod2_res = norm(mod2$fitted.values - X, type = "F") / (nrow(X) * ncol(X))
-  return(mod1_res + mod2_res)
-}
-
-myPairs = function(df1, df2, bottom = "", left = "") {
-  stopifnot(nrow(df1) == nrow(df2))
-  plots = list()
-  k = 1
-  for(i in 1:ncol(df1)) {i
-    for (j in 1:ncol(df2)) {
-      correlation = round(cor(df1[, i], df2[, j]), 2)
-      df = data.frame(x = df1[, i], y = df2[, j])
-      plots[[k]] = ggplot(df, aes(x, y)) + geom_point(size = .8) + ggtitle(correlation) +
-        theme(axis.text.x=element_blank(),
-              axis.text.y=element_blank(),
-              axis.ticks=element_blank(),
-              legend.position="none",
-              axis.title.x=element_blank(),
-              axis.title.y=element_blank())
-      k = k + 1
-    }
-  }
-  top = paste0("SV Spanning Score: ", round(sum_of_span_residue(df1, df2), 4))
-  print(marrangeGrob(plots, nrow = ncol(df1), ncol = ncol(df2), top = top, bottom = bottom, left = left))
-}
-```
 
 
 ```{r, echo=F, message=F, warning=F, results='hide'}
