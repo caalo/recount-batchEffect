@@ -122,9 +122,14 @@ analyzeSingleStudy = function(studyName, caseStatus_grep, logPlot = F) {
   nullMod = as.matrix(mod[, 1])
   svobj = sva(geneCountsNormalized, mod, nullMod, n.sv = n.sv, vfilter = 3000)
   
+  #Regression
+  modsv = cbind(mod, svobj$sv)
+  fitsv = lm.fit(modsv, t(geneCountsNormalized))
+  
   return(list(svobj = svobj,
               geneCounts = geneCounts, #return raw counts. 
-              mod = mod))
+              mod = mod,
+              fitsv = fitsv))
 }
 ```
 
@@ -248,6 +253,7 @@ logPlot = F
 agg_mods = list()
 agg_geneCounts = list()
 singleStudy_SV = list()
+singleStudy_coefs = list()
 multiStudy_SV = list()
 
 multiStudy_span_residue = list()
@@ -263,7 +269,9 @@ for(i in 1:nrow(study_info)) {
   agg_mods[[i]] = as.matrix(cbind(study_i$mod, i))
   agg_geneCounts[[i]] = study_i$geneCounts
   singleStudy_SV[[i]] = study_i$svobj
-  expected_multiStudy_SV = expected_multiStudy_SV + study_i$svobj$n.sv 
+  singleStudy_coefs[[i]] = study_i$fitsv$coefficients
+  expected_multiStudy_SV = expected_multiStudy_SV + study_i$svobj$n.sv
+  
   if(i > 1) {
     multiStudy_i = analyzeMultipleStudies(agg_mods, 
                                           agg_geneCounts, 
@@ -278,6 +286,7 @@ for(i in 1:nrow(study_info)) {
   
 }
 ```
+
 
 
 ```{r echo=F, message=F, fig.width=12, fig.height=10}
@@ -337,6 +346,15 @@ myPairs = function(df1, df2, bottom = "", left = "") {
 
 
 ```
+
+```{r echo=F}
+coefs = cbind(t(singleStudy_coefs[[1]][3:5 ,]),
+              t(singleStudy_coefs[[2]][3:6 ,]),
+              singleStudy_coefs[[3]][3 ,],
+              t(singleStudy_coefs[[4]][3:4 ,]))
+cor(coefs)
+```
+
 
 ```{r echo=F, fig.width=10, fig.height=8}
 
